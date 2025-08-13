@@ -4,7 +4,7 @@ import numpy as np
 import os
 import altair as alt
 import re # ⭐️ [추가] 정규표현식 라이브러리
-
+import asyncio
 # --- 챗봇을 위한 LangChain(Gemini) 라이브러리 ---
 from langchain_google_genai import GoogleGenerativeAIEmbeddings, ChatGoogleGenerativeAI
 from langchain_community.vectorstores import FAISS
@@ -622,3 +622,4 @@ with tab4:
             st.dataframe(news_df, use_container_width=True)
     else:
         st.warning("인사이트를 생성할 데이터가 부족합니다.")
+
