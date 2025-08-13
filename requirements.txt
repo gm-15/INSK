@@ -1,0 +1,9 @@
+streamlit
+pandas
+numpy
+altair
+langchain-google-genai
+langchain-community
+langchain
+faiss-cpu
+openpyxl
