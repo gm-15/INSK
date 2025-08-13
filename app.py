@@ -3,8 +3,7 @@ import pandas as pd
 import numpy as np
 import os
 import altair as alt
-import re
-import asyncio # ⭐️ [추가] 비동기 처리를 위한 라이브러리
+import re # ⭐️ [추가] 정규표현식 라이브러리
 
 # --- 챗봇을 위한 LangChain(Gemini) 라이브러리 ---
 from langchain_google_genai import GoogleGenerativeAIEmbeddings, ChatGoogleGenerativeAI
@@ -17,7 +16,7 @@ from langchain.prompts import PromptTemplate
 # -----------------------------------------------------------------
 st.set_page_config(layout="wide", page_title="AI 뉴스 대시보드")
 
-# 페이지 스타일 유지 (변경 없음)
+# 페이지 스타일 유지
 st.markdown("""
 <style>
     :root {
@@ -117,10 +116,14 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # -----------------------------------------------------------------
-# 1. 데이터 로딩 (변경 없음)
+# 1. 데이터 로딩
 # -----------------------------------------------------------------
 @st.cache_data(ttl=3600)
 def load_news_from_files(file_paths):
+    """
+    여러 로컬 파일(엑셀, CSV)에서 뉴스 데이터를 불러와 병합하고, 중복을 제거하며 전처리합니다.
+    (싱글/더블 따옴표 모두 처리하도록 개선)
+    """
     all_news = []
     for file_path in file_paths:
         if not os.path.exists(file_path):
@@ -149,15 +152,24 @@ def load_news_from_files(file_paths):
                 def parse_subcat(x):
                     if pd.isna(x) or not isinstance(x, str) or not x.strip():
                         return ''
+
                     processed_value = str(x).strip().replace('“', '"').replace('”', '"')
+
                     try:
+                        # 1. 큰따옴표 패턴: "소분류" : "키워드"
                         match = re.search(r'"소분류"\s*:\s*"([^"]*)"', processed_value)
-                        if match: return match.group(1).strip()
+                        if match:
+                            return match.group(1).strip()
+
+                        # 2. 작은따옴표 패턴: '소분류' : '키워드'
                         match = re.search(r"'소분류'\s*:\s*'([^']*)'", processed_value)
-                        if match: return match.group(1).strip()
-                        return ''
+                        if match:
+                            return match.group(1).strip()
+
+                        return '' # 패턴을 못 찾으면 빈 문자열 반환
                     except Exception:
-                        return ''
+                        return '' # 오류 발생 시 빈 문자열 반환
+
                 df['subcat'] = df['subcat'].apply(parse_subcat)
 
             all_news.append(df)
@@ -192,6 +204,7 @@ def load_news_from_files(file_paths):
         elif "infra" in s or "인프라" in s: return "AI Infra"
         elif "ecosystem" in s or "생태계" in s: return "AI Ecosystem"
         return "기타"
+
     merged_df['category'] = merged_df['category'].apply(normalize_category)
 
     if 'summary' in merged_df.columns:
@@ -202,9 +215,11 @@ def load_news_from_files(file_paths):
 
     return merged_df[['title','summary','category','subcat', 'url', 'importance']].fillna('')
 
-# 인사이트 분석 함수 (변경 없음)
+# 인사이트 분석 함수 유지
 def analyze_insights(df):
+    """뉴스 데이터에서 인사이트를 추출합니다."""
     insights = []
+    
     if not df.empty:
         category_counts = df['category'].value_counts()
         if not category_counts.empty:
@@ -213,26 +228,48 @@ def analyze_insights(df):
                 'title': '📊 주요 카테고리 분석',
                 'content': f'가장 많이 언급된 카테고리는 "{top_category}"({category_counts.iloc[0]}개 기사)입니다.'
             })
+        
+        # importance_counts = df['importance'].value_counts()
+        # high_ratio = (importance_counts.get('High', 0) / len(df)) * 100
+        # insights.append({
+        #     'title': '⭐ 중요도 분석',
+        #     'content': f'전체 {len(df)}개 뉴스 중 {importance_counts.get("High", 0)}개({high_ratio:.1f}%)가 높은 중요도로 분류되었습니다. {"중요한 이슈들이 많이 발생했습니다." if high_ratio > 30 else "일반적인 뉴스 흐름을 보이고 있습니다."}'
+        # })
+        
+        # if 'subcat' in df.columns and not df['subcat'].isna().all():
+        #     subcat_df = df['subcat'].dropna().str.split(',').explode().str.strip()
+        #     subcat_df = subcat_df[subcat_df != '']
+        #     if not subcat_df.empty:
+        #         top_keywords = subcat_df.value_counts().head(3).index.tolist()
+        #         insights.append({
+        #             'title': '🔍 핵심 키워드 트렌드',
+        #             'content': f'가장 주목받는 키워드는 "{", ".join(top_keywords)}"입니다. 이들 키워드를 중심으로 한 뉴스가 활발히 보도되고 있습니다.'
+        #         })
+        
+        # title_lengths = df['title'].str.len()
+        # avg_length = title_lengths.mean()
+        # insights.append({
+        #     'title': '📝 뉴스 제목 특성',
+        #     'content': f'뉴스 제목의 평균 길이는 {avg_length:.0f}자입니다. {"상세한 정보를 담은 긴 제목들이 많습니다." if avg_length > 50 else "간결한 제목들이 주를 이루고 있습니다."}'
+        # })
+    
     return insights
 
+# ⭐️ [수정] 파일 경로를 .csv로 다시 수정
 FILE_PATHS = ["final_insk03.xlsx", "final_insk02.xlsx"]
 news_df = load_news_from_files(FILE_PATHS)
 
+
 # -----------------------------------------------------------------
-# 2. RAG 파이프라인 구축 (⭐️ [수정] 비동기 오류 해결)
+# 2. RAG 파이프라인 구축 (기존 코드 유지)
 # -----------------------------------------------------------------
 @st.cache_resource
 def build_rag_pipeline(df):
-    # ⭐️ [수정 시작] 'There is no current event loop' 오류 해결을 위한 코드
-    # Streamlit의 스레드에서 LangChain의 비동기 기능을 사용하기 위해 이벤트 루프를 설정합니다.
     try:
-        # 현재 실행 중인 이벤트 루프를 가져옵니다.
         loop = asyncio.get_running_loop()
     except RuntimeError:
-        # 실행 중인 이벤트 루프가 없으면 새로 생성하고 현재 스레드의 이벤트 루프로 설정합니다.
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
-    # ⭐️ [수정 끝]
 
     if df.empty:
         return None
@@ -276,7 +313,7 @@ def build_rag_pipeline(df):
         return None
 
 # -----------------------------------------------------------------
-# 3. 메인 UI 및 챗봇 로직 (변경 없음)
+# 3. 메인 UI 및 챗봇 로직
 # -----------------------------------------------------------------
 st.title("📰 AI 뉴스 대시보드")
 if news_df.empty:
@@ -341,50 +378,180 @@ with tab1:
                 </a>
                 """, unsafe_allow_html=True)
 
+# ⭐️ [수정] 트렌드 분석 탭을 완전히 다시 작성
 with tab2:
     st.header("📊 키워드 트렌드")
+    
+    # 디버깅을 위한 정보 표시
+    st.info(f"전체 데이터 수: {len(news_df)}")
+    
+    # subcat 컬럼 존재 여부 확인
     if 'subcat' in news_df.columns:
+        
+        
+        # 비어있지 않은 subcat 데이터 확인
         non_empty_subcat = news_df['subcat'].dropna()
         non_empty_subcat = non_empty_subcat[non_empty_subcat.astype(str).str.strip() != '']
         
+        
+        
         if len(non_empty_subcat) > 0:
+            # 샘플 데이터 표시
+            st.subheader("샘플 subcat 데이터:")
+            sample_data = non_empty_subcat.head(5).tolist()
+            for i, sample in enumerate(sample_data, 1):
+                st.text(f"{i}. {sample}")
+            
+            # 키워드 추출 및 분석
             try:
-                subcat_series = non_empty_subcat.str.split(',').explode().str.strip()
+                # 콤마로 분리하고 각 키워드를 개별 항목으로 변환
+                subcat_series = non_empty_subcat.str.split(',').explode()
+                # 앞뒤 공백 제거
+                subcat_series = subcat_series.str.strip()
+                # 빈 문자열 제거
                 subcat_series = subcat_series[subcat_series != '']
                 
+                st.info(f"추출된 개별 키워드 수: {len(subcat_series)}")
+                
                 if len(subcat_series) > 0:
+                    # 키워드 빈도 계산
                     keyword_counts = subcat_series.value_counts().reset_index()
                     keyword_counts.columns = ['keyword', 'count']
                     
+                    st.info(f"고유 키워드 수: {len(keyword_counts)}")
+                    
+                    # 상위 키워드 선택 슬라이더
                     max_keywords = min(20, len(keyword_counts))
                     if max_keywords > 0:
                         top_n = st.slider("상위 키워드 개수", 1, max_keywords, value=min(10, max_keywords))
                         plot_data = keyword_counts.head(top_n)
                         
+                        # 차트 생성
                         try:
                             chart = alt.Chart(plot_data).mark_bar(
-                                cornerRadius=5, height=25
+                                cornerRadius=5,
+                                height=25
                             ).encode(
-                                x=alt.X('count:Q', title='언급 횟수', axis=alt.Axis(labelColor='white', titleColor='white', grid=True)),
-                                y=alt.Y('keyword:N', title='소분류 키워드', sort='-x', axis=alt.Axis(labelColor='white', titleColor='white')),
-                                color=alt.Color('count:Q', legend=None, scale=alt.Scale(scheme='blues')),
+                                x=alt.X('count:Q', 
+                                       title='언급 횟수',
+                                       axis=alt.Axis(labelColor='white', titleColor='white', grid=True)),
+                                y=alt.Y('keyword:N', 
+                                       title='소분류 키워드', 
+                                       sort='-x',
+                                       axis=alt.Axis(labelColor='white', titleColor='white')),
+                                color=alt.Color('count:Q', 
+                                              legend=None, 
+                                              scale=alt.Scale(scheme='blues')),
                                 tooltip=['keyword:N', 'count:Q']
                             ).properties(
-                                title=alt.TitleParams(text=f"상위 {top_n}개 소분류 키워드 언급 빈도", color='white', fontSize=16, anchor='start'),
+                                title=alt.TitleParams(
+                                    text=f"상위 {top_n}개 소분류 키워드 언급 빈도",
+                                    color='white',
+                                    fontSize=16,
+                                    anchor='start'
+                                ),
                                 height=max(400, top_n * 30),
                                 width=700
-                            ).configure_view(strokeWidth=0).configure_axis(gridColor='#444444')
+                            ).configure_view(
+                                strokeWidth=0
+                            ).configure_axis(
+                                gridColor='#444444'
+                            ).resolve_scale(
+                                color='independent'
+                            )
+
                             st.altair_chart(chart, use_container_width=True)
-                        except Exception:
+                            
+                            # 상위 키워드 테이블도 표시
+                            st.subheader("상위 키워드 상세 정보")
+                            st.dataframe(plot_data, use_container_width=True)
+                            
+                        except Exception as chart_error:
+                            st.error(f"차트 생성 중 오류 발생: {chart_error}")
+                            # 대신 간단한 바 차트 표시
                             st.bar_chart(plot_data.set_index('keyword')['count'])
+                    
+                    else:
+                        st.warning("표시할 키워드가 없습니다.")
                 else:
-                    st.warning("분석할 키워드가 없습니다.")
-            except Exception as e:
-                st.error(f"키워드 처리 중 오류 발생: {e}")
+                    st.warning("키워드 추출 후 데이터가 비어있습니다.")
+                    
+            except Exception as processing_error:
+                st.error(f"키워드 처리 중 오류 발생: {processing_error}")
+                st.text("오류 세부 정보:")
+                st.text(str(processing_error))
         else:
-            st.warning("키워드 분석을 위한 '소분류' 데이터가 비어있습니다.")
+            
+            
+            # 전체 subcat 컬럼의 상태 확인
+            total_rows = len(news_df)
+            null_count = news_df['subcat'].isnull().sum()
+            empty_count = (news_df['subcat'].astype(str).str.strip() == '').sum()
+            
+            
+            
+            
+            for i in range(min(5, len(news_df))):
+                subcat_value = news_df.iloc[i]['subcat']
+            
+            # Excel 파일에서 직접 읽은 원본 데이터도 표시
+            st.subheader("Excel 원본 데이터 재확인:")
+            try:
+                # Excel 파일 직접 읽기
+                for file_path in FILE_PATHS:
+                    if os.path.exists(file_path):
+                        st.write(f"파일: {file_path}")
+                        raw_df = pd.read_excel(file_path)
+                        
+                        # 소분류 관련 컬럼 찾기
+                        subcat_cols = [col for col in raw_df.columns if '소분류' in col]
+                        if subcat_cols:
+                            st.write(f"소분류 컬럼: {subcat_cols}")
+                            for col in subcat_cols:
+                                st.write(f"컬럼 '{col}'의 첫 3개 데이터:")
+                                for idx, val in enumerate(raw_df[col].head(3)):
+                                    st.code(f"  {idx+1}: {repr(val)}")
+                        break
+            except Exception as e:
+                st.error(f"Excel 원본 확인 중 오류: {e}")
+            
+            # 대안: 다른 컬럼을 이용한 키워드 분석 제안
+            # st.subheader("🔄 대안 분석:")
+            # st.info("subcat 데이터가 비어있으므로, 제목이나 요약에서 키워드를 추출해보겠습니다.")
+            
+            # 제목에서 키워드 추출 시도
+            if 'title' in news_df.columns:
+                titles = news_df['title'].dropna().astype(str)
+                if len(titles) > 0:
+                    # 간단한 키워드 추출 (3글자 이상의 단어)
+                    import re
+                    all_words = []
+                    for title in titles:
+                        # 한글, 영문, 숫자만 추출
+                        words = re.findall(r'[가-힣a-zA-Z0-9]{3,}', title)
+                        all_words.extend(words)
+                    
+                    if all_words:
+                        word_series = pd.Series(all_words)
+                        word_counts = word_series.value_counts().head(10)
+                        
+                        st.subheader("제목에서 추출한 키워드 TOP 10:")
+                        st.bar_chart(word_counts)
+                        
+                        # 테이블로도 표시
+                        word_df = word_counts.reset_index()
+                        word_df.columns = ['키워드', '빈도']
+                        st.dataframe(word_df)
     else:
         st.error("'subcat' 컬럼이 데이터에 존재하지 않습니다.")
+        st.subheader("사용 가능한 컬럼:")
+        st.write(list(news_df.columns))
+        
+        # 만약 다른 이름의 소분류 컬럼이 있다면 표시
+        possible_subcat_cols = [col for col in news_df.columns if '소분류' in col or 'sub' in col.lower()]
+        if possible_subcat_cols:
+            st.subheader("소분류 관련 가능한 컬럼:")
+            st.write(possible_subcat_cols)
 
 with tab3:
     st.header("🤖 AI 뉴스 분석 챗봇")
@@ -421,7 +588,7 @@ with tab3:
                     except Exception as e:
                         response = f"답변 생성 중 오류가 발생했습니다: {e}"
                         st.error(response)
-                
+            
             st.session_state.messages.append({"role": "assistant", "content": response})
 
 with tab4:
@@ -455,4 +622,3 @@ with tab4:
             st.dataframe(news_df, use_container_width=True)
     else:
         st.warning("인사이트를 생성할 데이터가 부족합니다.")
-
