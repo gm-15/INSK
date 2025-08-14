@@ -3,8 +3,9 @@ import pandas as pd
 import numpy as np
 import os
 import altair as alt
-import re # ⭐️ [추가] 정규표현식 라이브러리
+import re
 import asyncio
+
 # --- 챗봇을 위한 LangChain(Gemini) 라이브러리 ---
 from langchain_google_genai import GoogleGenerativeAIEmbeddings, ChatGoogleGenerativeAI
 from langchain_community.vectorstores import FAISS
@@ -16,27 +17,38 @@ from langchain.prompts import PromptTemplate
 # -----------------------------------------------------------------
 st.set_page_config(layout="wide", page_title="AI 뉴스 대시보드")
 
-# 페이지 스타일 유지
+# CSS 코드 수정
 st.markdown("""
 <style>
+    /* Google Font Import */
+    @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;700&display=swap');
+
     :root {
         --brand-dark: #121212;
         --brand-card: #1E1E1E;
         --brand-card-hover: #2a2a2a;
         --brand-light: #E0E0E0;
         --brand-light-secondary: #B0B0B0;
-        --color-importance-high: #FBBF24;
-        --color-importance-medium: #9CA3AF;
+        --color-telco: #3B82F6; /* blue-500 */
+        --color-llm: #22C55E; /* green-500 */
+        --color-infra: #F97316; /* orange-500 */
+        --color-ai-ecosystem: #A855F7; /* purple-500 */
+        --color-etc: #6B7280; /* gray-500 for '기타' */
+        --color-importance-high: #FBBF24; /* amber-400 */
     }
-    body {
+
+    body, .stApp {
+        font-family: 'Noto Sans KR', sans-serif;
         background-color: var(--brand-dark);
         color: var(--brand-light);
     }
+    
     .stRadio > div {
         display: flex;
         justify-content: center;
         gap: 20px;
     }
+
     .news-card {
         background-color: var(--brand-card);
         border-radius: 12px;
@@ -51,13 +63,16 @@ st.markdown("""
         margin-bottom: 20px;
         box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
     }
+
     .news-card:hover {
         transform: translateY(-6px);
         background-color: var(--brand-card-hover);
     }
+    
     .news-card a {
         text-decoration: none;
     }
+
     .news-card h3 {
         color: white;
         font-size: 1.1rem;
@@ -71,6 +86,7 @@ st.markdown("""
         line-height: 1.4;
         min-height: 4.2em;
     }
+
     .news-card p {
         color: var(--brand-light-secondary);
         font-size: 0.85rem;
@@ -83,18 +99,23 @@ st.markdown("""
         flex-grow: 1;
         margin-bottom: 12px;
     }
-    .importance-High { border-left-color: var(--color-importance-high); }
-    .importance-Medium { border-left-color: var(--color-importance-medium); }
+
     .category-tag {
         display: inline-block;
-        padding: 6px 14px;
+        padding: 4px 12px;
         border-radius: 9999px;
         font-size: 0.75rem;
-        font-weight: 600;
+        font-weight: 500;
         color: white;
-        min-width: 60px;
-        text-align: center;
     }
+
+    /* 카테고리별 배경 색상 */
+    .category-Telco { background-color: var(--color-telco); }
+    .category-LLMAIService { background-color: var(--color-llm); }
+    .category-AIInfra { background-color: var(--color-infra); }
+    .category-AIEcosystem { background-color: var(--color-ai-ecosystem); }
+    .category-기타 { background-color: var(--color-etc); }
+    
     .insight-card {
         background-color: var(--brand-card);
         border-radius: 12px;
@@ -623,5 +644,6 @@ with tab4:
             st.dataframe(news_df, use_container_width=True)
     else:
         st.warning("인사이트를 생성할 데이터가 부족합니다.")
+
 
 
