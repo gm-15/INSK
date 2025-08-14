@@ -367,19 +367,19 @@ with tab1:
             category_name = str(row['category']).strip()
             category_class_name = ''.join(e for e in category_name if e.isalnum())
             
-            color_hash = abs(hash(category_name)) % (256*256*256)
-            r = max(80, (color_hash & 0xFF0000) >> 16)
-            g = max(80, (color_hash & 0x00FF00) >> 8)
-            b = max(80, color_hash & 0x0000FF)
+            # color_hash = abs(hash(category_name)) % (256*256*256)
+            # r = max(80, (color_hash & 0xFF0000) >> 16)
+            # g = max(80, (color_hash & 0x00FF00) >> 8)
+            # b = max(80, color_hash & 0x0000FF)
             
-            st.markdown(f"""
-            <style>
-                .category-{category_class_name} {{ 
-                    background-color: rgb({r}, {g}, {b}) !important;
-                    opacity: 0.9;
-                }}
-            </style>
-            """, unsafe_allow_html=True)
+            # st.markdown(f"""
+            # <style>
+            #     .category-{category_class_name} {{ 
+            #         background-color: rgb({r}, {g}, {b}) !important;
+            #         opacity: 0.9;
+            #     }}
+            # </style>
+            # """, unsafe_allow_html=True)
 
             with cols[idx % 3]:
                 url_link = row['url'] if row['url'] and isinstance(row['url'], str) and row['url'].strip() else "#"
@@ -644,6 +644,7 @@ with tab4:
             st.dataframe(news_df, use_container_width=True)
     else:
         st.warning("인사이트를 생성할 데이터가 부족합니다.")
+
 
 
 
