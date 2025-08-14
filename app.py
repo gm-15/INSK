@@ -45,7 +45,8 @@ st.markdown("""
         flex-direction: column;
         justify-content: space-between;
         transition: transform 0.3s ease, background-color 0.3s ease;
-        border-left: 5px solid transparent;
+        /* 모든 카드에 동일한 테두리 색상 적용 */
+        border-left: 5px solid var(--color-importance-high); 
         height: 280px;
         margin-bottom: 20px;
         box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
@@ -622,4 +623,5 @@ with tab4:
             st.dataframe(news_df, use_container_width=True)
     else:
         st.warning("인사이트를 생성할 데이터가 부족합니다.")
+
 
