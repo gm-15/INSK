@@ -394,7 +394,6 @@ with tab1:
                         </div>
                         <div style="margin-top: auto; display:flex; justify-content:space-between; align-items:center;">
                             <span class="category-tag category-{category_class_name}">{category_name}</span>
-                            <span style="font-size:0.875rem; font-weight:500; color:var(--color-importance-{row['importance'].lower()})">{row['importance']}</span>
                         </div>
                     </div>
                 </a>
@@ -644,6 +643,7 @@ with tab4:
             st.dataframe(news_df, use_container_width=True)
     else:
         st.warning("인사이트를 생성할 데이터가 부족합니다.")
+
 
 
 
