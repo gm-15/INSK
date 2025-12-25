@@ -1,0 +1,107 @@
+name: Deploy Backend to AWS ECR and Elastic Beanstalk
+
+on:
+  push:
+    branches: [ "main" ]
+
+env:
+  AWS_REGION: ap-northeast-2
+  ECR_REPOSITORY: insk-backend
+  EB_APPLICATION_NAME: INSK-V3.02
+  EB_ENVIRONMENT_NAME: INSK-V302-env     # ✅ 변경된 Elastic Beanstalk 환경 이름
+  S3_BUCKET: elasticbeanstalk-ap-northeast-2-587403181027
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Log in to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Set image tag (Git commit SHA)
+        id: image
+        run: echo "TAG=${{ github.sha }}" >> $GITHUB_OUTPUT
+
+      - name: Build and push Docker image
+        run: |
+          docker build -t ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ steps.image.outputs.TAG }} -f backend/Dockerfile .
+          docker push ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ steps.image.outputs.TAG }}
+
+      - name: Generate Dockerrun.aws.json
+        run: |
+          sed -i "s|<TAG>|${{ steps.image.outputs.TAG }}|g" Dockerrun.aws.json
+
+      - name: Create deployment package
+        run: zip -r deploy.zip Dockerrun.aws.json
+
+      - name: Verify deployment package
+        run: |
+          if [ ! -f deploy.zip ]; then
+            echo "❌ deploy.zip not found!"
+            exit 1
+          fi
+
+      # ✅ Step 1: S3에 ZIP 업로드
+      - name: Upload deploy.zip to S3
+        run: |
+          aws s3 cp deploy.zip s3://${{ env.S3_BUCKET }}/${{ env.EB_APPLICATION_NAME }}/v-${{ github.sha }}.zip
+
+      # ✅ Step 2: EB 환경변수 필수값 세팅
+      - name: Ensure EB environment variables
+        run: |
+          echo '[
+            {"Namespace":"aws:elasticbeanstalk:application:environment","OptionName":"SERVER_PORT","Value":"8080"},
+            {"Namespace":"aws:elasticbeanstalk:application:environment","OptionName":"spring.profiles.active","Value":"prod"}
+          ]' > options.json
+          aws elasticbeanstalk update-environment \
+            --environment-name "${{ env.EB_ENVIRONMENT_NAME }}" \
+            --option-settings file://options.json
+
+      # ✅ Step 3: EB Application Version 생성
+      - name: Create new Elastic Beanstalk Application Version
+        run: |
+          aws elasticbeanstalk create-application-version \
+            --application-name "${{ env.EB_APPLICATION_NAME }}" \
+            --version-label "v-${{ github.sha }}" \
+            --source-bundle S3Bucket="${{ env.S3_BUCKET }}",S3Key="${{ env.EB_APPLICATION_NAME }}/v-${{ github.sha }}.zip" \
+            --region "${{ env.AWS_REGION }}" || echo "⚠️ Version already exists, continuing..."
+
+      # ✅ Step 4: EB 환경 Ready 상태 대기 후 배포
+      - name: Deploy to Elastic Beanstalk
+        run: |
+          VERSION="v-${{ github.sha }}"
+          echo "🚀 Waiting for environment to be Ready before deployment..."
+
+          for i in {1..20}; do
+            STATUS=$(aws elasticbeanstalk describe-environments \
+              --environment-names "${{ env.EB_ENVIRONMENT_NAME }}" \
+              --query "Environments[0].Status" \
+              --output text)
+            echo "⏳ Current EB status: $STATUS"
+            if [ "$STATUS" = "Ready" ]; then
+              echo "✅ Environment is Ready. Proceeding with deployment."
+              break
+            fi
+            if [ $i -eq 20 ]; then
+              echo "❌ Environment never reached Ready state."
+              exit 1
+            fi
+            sleep 30
+          done
+
+          echo "🚀 Deploying version $VERSION ..."
+          aws elasticbeanstalk update-environment \
+            --environment-name "${{ env.EB_ENVIRONMENT_NAME }}" \
+            --version-label "$VERSION"
