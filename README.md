@@ -17,7 +17,7 @@ INSK는 AI 기반 뉴스 수집, 분석, 추천 시스템을 제공하는 엔터
 
 ### 백엔드 스택
 - **Framework**: Spring Boot 3.x
-- **Language**: Java 17+
+- **Language**: Java 21
 - **ORM**: JPA/Hibernate
 - **Database**: MySQL 8.0
 - **Security**: Spring Security + JWT
