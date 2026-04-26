@@ -25,7 +25,7 @@ net start MySQL80
 
 **MySQL이 없으면:**
 - [MySQL Community Server 8.0](https://dev.mysql.com/downloads/mysql/) 다운로드 및 설치
-- 설치 시 root 비밀번호 설정 (기본값: `43214321`)
+- 설치 시 root 비밀번호를 임의로 설정 (이후 `application.properties`의 `spring.datasource.password`에 동일하게 입력)
 
 ### 3. Redis 설치 (선택사항, 캐싱 기능 사용 시)
 ```bash
@@ -81,12 +81,14 @@ SELECT * FROM users;
 ### 1. `application.properties` 확인
 파일 위치: `insk-backend/backend/src/main/resources/application.properties`
 
-**주요 설정:**
+> ⚠️ **보안 주의**: `application.properties`는 `.gitignore`에 등록되어 있어 git에 커밋되지 않습니다. 아래 값들은 **로컬에만 작성**하고, 실제 자격증명을 절대 이 가이드 파일이나 README, 커밋 메시지 등 git에 들어가는 위치에 적지 마세요. 운영 환경(`application-prod.properties`)은 이미 `${env_var}` 형태로 외부 주입을 사용합니다.
+
+**주요 설정 (값은 본인 환경에 맞게 입력):**
 ```properties
 # 데이터베이스 연결
 spring.datasource.url=jdbc:mysql://localhost:3306/insk_db?useSSL=false&serverTimezone=UTC&characterEncoding=UTF-8&allowPublicKeyRetrieval=true
 spring.datasource.username=root
-spring.datasource.password=43214321  # ← 본인의 MySQL 비밀번호로 변경
+spring.datasource.password=<YOUR_MYSQL_PASSWORD>
 
 # JPA 설정
 spring.jpa.hibernate.ddl-auto=update  # 기존 테이블 유지하면서 스키마 업데이트
@@ -96,17 +98,22 @@ spring.data.redis.host=localhost
 spring.data.redis.port=6379
 ```
 
-### 2. API 키 확인
+### 2. API 키 발급 및 설정
+
+다음 키들을 발급받아 로컬 `application.properties`에 입력합니다.
+
+| 항목 | 발급 위치 |
+|------|---------|
+| Naver News API | https://developers.naver.com/apps |
+| OpenAI API | https://platform.openai.com/api-keys |
+
 ```properties
 # Naver News API
-naver.api.client-id=gGbneupf0aO1K7cuOmdl
-naver.api.client-secret=ZiYdOmVSPV
+naver.api.client-id=<YOUR_NAVER_CLIENT_ID>
+naver.api.client-secret=<YOUR_NAVER_CLIENT_SECRET>
 
 # OpenAI API
-openai.api.key=sk-proj-...  # ← 유효한 키인지 확인
-
-# Google API (필요시)
-GOOGLE_API_KEY=AIzaSyBGiou62mWP0HqDm5Pr_SJRoB6YTZguD7o
+openai.api.key=<YOUR_OPENAI_API_KEY>
 ```
 
 ---
