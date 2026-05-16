@@ -1,53 +1,176 @@
-# INSK — News Intelligence Platform
+# INSK — 뉴스 인텔리전스 플랫폼
 
-> A Spring Boot 3 / Next.js 15 platform that ingests articles from multiple external sources, runs OpenAI-based summarization and embedding, and serves per-department article recommendations.
-> **Currently in v4 redesign based on a senior engineer code review.**
+> 여러 외부 뉴스 소스에서 기사를 수집해 GPT-4o 분석·임베딩을 거쳐, 사용자 부서별로 가장 관련성 높은 기사를 추천하는 Spring Boot 3 / Next.js 15 플랫폼.
+> **현재 v4 재설계 단계 — 시니어 코드 리뷰 기반의 비용·신뢰성 리아키텍처.**
 
-🇰🇷 한국어 버전: [README.ko.md](README.ko.md)
+🇬🇧 영문 버전: [README.en.md](README.en.md) · 📜 v3 시점 보존본: [README_v3_legacy.ko.md](README_v3_legacy.ko.md)
 
 ---
 
-## ✨ At a Glance
+## 🚀 30초 요약 (면접관용)
 
-| | v3 (Shipped) | v4 (Designed, Implementation in Progress) |
+| 항목 | 내용 |
+|---|---|
+| 한 줄 | 7개 외부 소스 → 10개 부서 ENUM × 4 카테고리로 정규화하는 뉴스 인텔리전스 플랫폼 |
+| 박건우 역할 | 팀 리드 (SK mySUNI 써니C 4기 출발 → 개인 고도화) |
+| 핵심 기술 | Spring Boot 3 · Java 21 · OpenAI GPT-4o · text-embedding-3-small · Spring Retry · Resilience4j · AWS Elastic Beanstalk |
+| v3 (배포 완료) | AWS EB 배포, GitHub Actions ECR 파이프라인, JWT 인증, 부서별 Top-5 추천 |
+| v4 (설계 완료, 구현 진행 중) | SKT AI Data Engineering 시니어 **9건 코드 리뷰 지적**을 매트릭스로 정리, 비용·신뢰성 재설계 원칙 결정 |
+| 정직 노트 | v4 cost ladder의 수치는 **설계 목표**. 운영비 실측은 아직 (실 사용자 받지 않음) |
+
+---
+
+## 📰 어떤 문제를 풀고 있나? (도메인 설명)
+
+대기업 line-of-business 직원은 매일 산업 뉴스를 수동으로 클리핑·중복 제거·요약합니다. 2024년 기준 SK 계열사 직원들은 **하루 약 1.5시간, 주당 7~8시간**을 뉴스 클리핑에 쓰고 있다고 보고됐고, 2025년에는 몇몇 팀이 이 활동을 주 1회로 다운그레이드했습니다 — 수작업 비용이 전략 업무를 잡아먹어서요.
+
+INSK는 이 ingestion-and-analysis 루프를 자동화하고 부서별 고관련성 기사만 직원에게 다시 보내줍니다. **엔지니어링 도전 과제**는 — LLM 호출당 비용을 조직 규모에서 경제성이 성립할 만큼 낮게 유지하면서도, 단일 LLM API 실패가 기사를 통째로 버리지 않도록 신뢰성을 보존하는 것. v4 재설계의 다섯 가지 운영 원칙은 모두 이 제약에 대한 직접적 답변입니다.
+
+---
+
+## 🏛️ v3 vs v4 한눈에 비교
+
+| 항목 | v3 (배포 완료) | v4 (설계 완료, 구현 진행 중) |
 |---|---|---|
-| **Status** | Deployed via AWS Elastic Beanstalk | Migration plan documented in [MENTOR_FEEDBACK_CHANGELOG.md](MENTOR_FEEDBACK_CHANGELOG.md) |
-| **LLM cost strategy** | Direct GPT-4o per article | Cost-tiered filter ladder: $0 URL → $0 title Jaccard → ~$0 vector ANN → $0.05 GPT-4o |
-| **Transaction scope** | Pipeline-wide `@Transactional` | Per-write minimal transactions; external API calls outside DB connection |
-| **Retry & fallback** | None — silent failure | `@Retryable(maxAttempts=5)` + `@Recover` fallback model |
-| **Caching** | In-memory `ConcurrentMapCacheManager` | `RedisCacheManager` + prompt caching keyed by article-body MD5 |
-| **Concurrency** | Sequential per-keyword loop | `CompletableFuture.runAsync` parallel keyword processing |
-| **Configuration** | Hardcoded constants | Externalized to `application.properties` for runtime tuning |
+| **상태** | AWS Elastic Beanstalk 배포 | 마이그레이션 계획은 [MENTOR_FEEDBACK_CHANGELOG.md](MENTOR_FEEDBACK_CHANGELOG.md) |
+| **LLM 비용 전략** | 모든 기사에 GPT-4o 직접 호출 | **LLM 호출 전 저비용 중복 체크를 우선 통과시키는 비용 체계화** — $0 URL → $0 title Jaccard → ~$0 vector ANN → $0.05 GPT-4o |
+| **트랜잭션 범위** | 파이프라인 전체 `@Transactional` | per-write 최소 트랜잭션; 외부 API 호출은 DB 커넥션 밖으로 |
+| **재시도·폴백** | 없음 — silent failure | `@Retryable(maxAttempts=5)` + `@Recover` smaller-model fallback |
+| **캐시** | 인메모리 `ConcurrentMapCacheManager` | `RedisCacheManager` + 기사 본문 MD5 키 prompt 캐싱 |
+| **동시성** | 키워드별 순차 루프 | `CompletableFuture.runAsync` 키워드 병렬 |
+| **설정** | 하드코드 상수 | `application.properties`로 외부화, 런타임 튜닝 |
 
-> **Honest note:** Cost figures shown above are *design targets* for v4 (per-call OpenAI pricing × planned filter ratios). Latency and aggregate-cost benchmarks will be added once v4 is implemented and load tested.
-
----
-
-## 📰 Why This Project Exists (Background)
-
-INSK was built to address a recurring time-sink among current employees at SK affiliates. As of 2024, line-of-business workers reported spending **~1.5 hours per day (7–8 hours per week)** on manual news clipping — collecting, deduplicating, and summarizing industry articles to support strategy planning and partnership negotiations. By 2025, several teams had downgraded the activity to a once-per-week cadence simply because the manual cost crowded out the strategic work the clipping was meant to enable.
-
-INSK automates the ingestion-and-analysis loop and delivers only the high-relevance subset back to each employee's department. The engineering challenge — and the focus of v4's mentor-informed redesign — is keeping the LLM cost per article low enough that the platform's economics work at organizational scale, while still preserving end-to-end reliability so a single LLM API failure does not discard the article entirely. The five operational principles below (cost-tiered filtering, transaction-scope decomposition, retry+fallback, distributed cache, parallel keyword processing) are direct answers to that constraint.
+> **💡 정직 노트.** 위 표의 cost 수치는 **v4 설계 목표** (per-call OpenAI pricing × 계획된 필터 비율). 운영비 실측·집계 벤치마크는 **v4 구현 + 실 부하 테스트 후에야 추가됩니다.** 현재까지 INSK는 실 사용자를 받은 적이 없으며, GPT-4o 운영비가 실제로 발생한 적도 없습니다.
 
 ---
 
-## 🏛️ Architecture (v3, Deployed)
+## 🎯 v3 핵심 기능 (배포 완료)
+
+### 1. 다중 소스 뉴스 수집
+- 네이버 뉴스 API 검색 + 본문 스크래핑
+- AI Times · The Guru 직접 ingestion
+- URL 기반 중복 제거
+- 403-방어 헤더 (User-Agent, Referrer)
+
+### 2. AI 분석 파이프라인
+- GPT-4o 한국어 요약 생성
+- 인사이트 추출
+- 강제 JSON-schema 카테고리 분류: **Telco / LLM / INFRA / AI Ecosystem**
+- 태그 생성 (JSON array)
+- HTML 태그 정리
+
+### 3. 임베딩 & 스코어링
+- 기사별 임베딩 (`text-embedding-3-small`)
+- 사용자 키워드 vs 기사 코사인 유사도
+- 0~10 점수, 피드백 가중치로 자동 조정
+
+### 4. 부서별 Top-5 추천
+- **10개 조직 단위**: T_CLOUD, T_NETWORK_INFRA, T_HR, T_AI_SERVICE, T_MARKETING, T_STRATEGY, T_ENTERPRISE_B2B, T_PLATFORM_DEV, T_TELCO_MNO, T_FINANCE
+- 부서별 키워드 집계 → 랭킹 Top-5
+
+### 5. 피드백 루프
+- 좋아요 / 싫어요 토글
+- 텍스트 피드백 (익명 가능)
+- 피드백 시 점수 자동 재계산
+
+### 6. 인증 · 보안
+- JWT (1시간 TTL)
+- BCrypt 비밀번호 해싱
+- 비밀번호 재설정 토큰 (1시간, 일회용)
+- Spring Security endpoint 보호
+
+### 7. PDF 내보내기
+- 기사 상세 PDF 생성 (PDFBox / iText)
+
+---
+
+## 📚 v4 스토리 — 왜 이 프로젝트가 의미 있는가
+
+### v3 배포 후 멘토 코드 리뷰
+
+INSK v3을 AWS Elastic Beanstalk에 배포한 뒤, **SK AI Data Engineering 팀 시니어 엔지니어**에게 코드 리뷰를 부탁했습니다. 9건의 critical/major 지적이 돌아왔는데, 키워드 4가지만 짚으면:
+
+| 지적 영역 | 핵심 내용 |
+|---|---|
+| **OOM 위험** | 파이프라인 전체를 하나의 `@Transactional`로 묶어 메모리·커넥션 점유가 길어짐 |
+| **트랜잭션 범위 과도** | 외부 LLM 호출이 DB 커넥션 안에 있어 외부 지연이 DB 락에 전파 |
+| **Retry 부재** | LLM API 실패 시 silent failure → 기사 통째로 손실 |
+| **CORS 하드코딩** | 운영 환경에서 origin 변경 시 재배포 필요 |
+
+### 매트릭스로 정리하는 습관
+
+9건 지적을 회의록 한 줄로 두지 않고, [`MENTOR_FEEDBACK_CHANGELOG.md`](MENTOR_FEEDBACK_CHANGELOG.md)에 **"피드백 → 영향 파일 → 변경 유형 → 심각도"** 매트릭스로 정리했습니다. 단순 응답이 아니라 **추후 PR로 닫을 수 있는 형태로 문서화**하는 것이 핵심이라 배웠고, 이 매트릭스가 v4 리팩토링 계획서의 기반이 되었습니다.
+
+### v4 재설계 핵심 원칙
+
+> **"LLM 호출 전에 저비용 중복 체크를 우선 통과시키는 비용 체계화"**
+
+가장 비싼 자원(LLM 호출) 앞에 단계적 필터를 세우고, 각 단계에서 떨어트릴 케이스를 측정으로 정의한다는 원칙. 모든 싼 필터가 통과되기 전에는 LLM이 호출되지 않습니다.
+
+```
+새 기사 입력
+  │
+  ▼ Layer 1 — URL 매칭 ($0)
+  │  이미 처리한 URL이면 즉시 dedup
+  │
+  ▼ Layer 2 — title Jaccard 유사도 ($0)
+  │  기존 기사 제목과 토큰 유사도 0.9 이상이면 dedup
+  │
+  ▼ Layer 3 — vector ANN (~$0)
+  │  기존 임베딩과 코사인 유사도 0.95 이상이면 dedup
+  │
+  ▼ Layer 4 — GPT-4o 분석 ($0.05)
+     이 단계까지 살아남은 새 기사만 LLM에 보냄
+```
+
+이 ladder는 단순한 비용 절감이 아니라 **시스템의 사고 방식 전환**입니다 — 비싼 자원 앞에는 측정 가능한 단계적 필터를 세우고, 각 단계에서 떨어트릴 케이스를 데이터로 정의한다는 원칙.
+
+---
+
+## 🔧 기술 스택
+
+### Backend
+- **Spring Boot 3.5.6** · **Java 21** · Gradle
+- Spring Data JPA · Hibernate · MySQL 8.0
+- Spring Security · jjwt 0.12.x · BCrypt
+- Jsoup 1.17.2 · Spring WebFlux
+- PDFBox 2.0.30 · iText 7.2.5
+- Spring `@Async` (ThreadPoolTaskExecutor)
+- *(v4)* Spring Retry · Resilience4j · RedisCacheManager
+
+### Frontend
+- **Next.js 15.5.4** (App Router) · React 19.1 · TypeScript 5
+- Tailwind CSS 4 · Axios
+
+### AI / Data
+- **OpenAI GPT-4o** (기사 분석)
+- **text-embedding-3-small** (의미 임베딩)
+- **gpt-4o-mini** (v4 저비용 분기 계획)
+
+### Infrastructure
+- **AWS Elastic Beanstalk** (`ap-northeast-2`)
+- **AWS ECR** (multi-stage Docker images)
+- **GitHub Actions** (test → build → ECR push → S3 → EB deploy with Ready-state polling)
+
+---
+
+## 🏛️ 아키텍처 (v3, 배포 완료)
 
 ```
 ┌──────────────────────────────────────────────────────────────────┐
-│  External Sources                                                │
-│  Naver News API · AI Times · The Guru                            │
+│  외부 소스                                                       │
+│  네이버 뉴스 API · AI Times · The Guru                            │
 └──────────────────────────────────────────────────────────────────┘
               │
-              ▼  Jsoup scraper · Spring WebFlux client
+              ▼  Jsoup 스크래퍼 · Spring WebFlux 클라이언트
 ┌──────────────────────────────────────────────────────────────────┐
 │  Spring Boot 3.5.6 (Java 21)                                     │
 │  ┌──────────────────────────────────────────────────────────┐    │
 │  │ NewsPipelineService (@Async)                             │    │
-│  │   ingestion → OpenAI analysis → embedding → scoring      │    │
+│  │   ingestion → OpenAI 분석 → 임베딩 → 스코어링            │    │
 │  └──────────────────────────────────────────────────────────┘    │
-│  Spring Security + JWT (1h TTL)                                  │
-│  Per-Department Top-5 Recommendation                             │
+│  Spring Security + JWT (1시간 TTL)                               │
+│  부서별 Top-5 추천                                               │
 └──────────────────────────────────────────────────────────────────┘
               │
               ▼
@@ -60,276 +183,57 @@ INSK automates the ingestion-and-analysis loop and delivers only the high-releva
               ▼
 ┌──────────────────────────────────────────────────────────────────┐
 │  Next.js 15.5.4 (App Router) · React 19 · Tailwind CSS 4         │
-│  /  /articles/[id]  /keywords  /departments  /favorites          │
+│  / · /articles/[id] · /keywords · /departments · /favorites      │
 └──────────────────────────────────────────────────────────────────┘
 
-Deployment:  GitHub Actions  →  AWS ECR  →  Elastic Beanstalk
-             (multi-stage Dockerfile · EB Ready-state polling guard)
+배포: GitHub Actions → AWS ECR → Elastic Beanstalk
+     (multi-stage Dockerfile · EB Ready-state polling guard)
 ```
 
 ---
 
-## 🔧 Tech Stack
+## 👤 박건우 역할
 
-### Backend
-- **Spring Boot 3.5.6** · **Java 21** · Gradle
-- Spring Data JPA · Hibernate · MySQL 8.0
-- Spring Security · jjwt 0.12.x · BCrypt
-- Jsoup 1.17.2 · Spring WebFlux
-- PDFBox 2.0.30 · iText 7.2.5
-- Spring `@Async` (ThreadPoolTaskExecutor)
-
-### Frontend
-- **Next.js 15.5.4** (App Router)
-- React 19.1 · TypeScript 5
-- Tailwind CSS 4 · Axios
-
-### AI / Data
-- **OpenAI GPT-4o** (article analysis)
-- **text-embedding-3-small** (semantic embedding)
-- **gpt-4o-mini** (planned for low-cost branches in v4)
-
-### Infrastructure
-- **AWS Elastic Beanstalk** (`ap-northeast-2`)
-- **AWS ECR** (multi-stage Docker images)
-- **GitHub Actions** (test → build → ECR push → S3 → EB deploy with Ready-state polling)
-
----
-
-## 🎯 Core Capabilities (v3, Shipped)
-
-### 1. Multi-source News Ingestion
-- Naver News API search + body scraping
-- AI Times · The Guru direct ingestion
-- URL-based deduplication
-- 403-prevention headers (User-Agent, Referrer)
-
-### 2. AI Analysis Pipeline
-- Korean summary generation (GPT-4o)
-- Insight extraction
-- Forced JSON-schema category classification: **Telco / LLM / INFRA / AI Ecosystem**
-- Tag generation (JSON array)
-- HTML tag stripping
-
-### 3. Embedding & Scoring
-- Per-article embedding (`text-embedding-3-small`)
-- User keyword vs. article cosine similarity
-- 0–10 score range, adjusted by feedback weighting
-
-### 4. Per-Department Top-5
-- 10 organizational units (T_CLOUD, T_NETWORK_INFRA, T_HR, T_AI_SERVICE, T_MARKETING, T_STRATEGY, T_ENTERPRISE_B2B, T_PLATFORM_DEV, T_TELCO_MNO, T_FINANCE)
-- Per-department keyword aggregation → ranked top-5
-
-### 5. Feedback Loop
-- Like / dislike toggle
-- Text feedback (anonymous-allowed)
-- Score auto-recompute on feedback
-
-### 6. Authentication & Security
-- JWT (1-hour TTL)
-- BCrypt password hashing
-- Password-reset token (1-hour, one-time)
-- Spring Security endpoint protection
-
-### 7. PDF Export
-- Article-detail PDF generation (PDFBox / iText)
-
----
-
-## 📚 The v4 Story — Why This Project Matters
-
-After v3 deployment, I requested a code review from a senior engineer at **SKT AI Data Engineering team** rather than calling the project finished. The reviewer returned **9 critical and major findings**, each with code-level critique. I documented every finding in a 1:1 mapping with v3 problem code and v4 redesign in [MENTOR_FEEDBACK_CHANGELOG.md](MENTOR_FEEDBACK_CHANGELOG.md).
-
-### v3 → v4 Migration — Headline Items
-
-#### 🔴 Critical · Cost-Tiered Duplicate Filtering
-> Mentor: *"For simple article duplication checks, embedding the entire body and computing cosine similarity wastes LLM API cost and CPU."*
-
-**v3 problem.** `embeddingRepository.findAll()` loaded all vectors into memory; LLM cost was incurred *before* duplication detection.
-
-**v4 design.** A strict cost ladder — no LLM call before all cheap filters pass.
-```
-[1] URL exact match           $0           O(1) index lookup
-[2] Title Jaccard similarity  $0           Recent-window (7 days) titles only
-[3] Vector ANN (Phase 2)     ~$0           Indexed similarity
-─────────────────────────────────────────────────────────────────
-[4] GPT-4o analysis          ~$0.05/call   Only items past [1]–[3]
-```
-
-#### 🔴 Critical · `@Transactional` Scope Decomposition
-> Mentor: *"`runPipelineSync` is wrapped in a single `@Transactional`. While Naver and OpenAI responses delay, the DB connection stays held — leading to Connection Pool Exhaustion that paralyzes other operations like signup."*
-
-**v3 problem.** Pipeline-wide `@Transactional` held a DB connection through tens of seconds of external API waits.
-
-**v4 design.**
-- `@Transactional` removed from pipeline orchestration
-- New `ArticleSaveService` class concentrates all DB-write methods, each in its own short transaction
-- LLM calls happen *outside* any transaction — failure rolls nothing back
-
-#### 🔴 Critical · LLM Calls Before Duplication Checks
-> Mentor: *"If you call APIs (Embedding, ChatCompletion) at ingestion and only check duplication at save time, the cost has already been incurred."*
-
-**v4 design.** Duplication is decided strictly before any paid API call. New `DuplicateCheckService.isDuplicateByTitle(...)` runs against a sliding window of recent titles — no `findAll()` ever.
-
-#### 🟠 Major · Retry + Fallback as a First-Class Concern
-> Mentor: *"For unavoidable model dependencies, retry with exponential backoff (~5 times). Caching → retry → fallback in that order."*
-
-**v4 design.**
-```java
-@Retryable(
-    retryFor = OpenAiApiException.class,
-    maxAttempts = 5,
-    backoff = @Backoff(delay = 1000, multiplier = 2.0, maxDelay = 30000)
-)
-public AnalysisResponse analyzeWithRetry(String body) { ... }
-
-@Recover
-public AnalysisResponse fallbackAnalyze(Exception e, String body) {
-    // After 5 failures, fall back to gpt-4o-mini once
-}
-```
-
-#### 🟠 Major · Model Branching by Task Cost
-> Mentor: *"Using gpt-4o for simple translation or summarization. Switching to gpt-4o-mini saves ~90% cost without quality loss."*
-
-**v4 design.** Externalized in `application.properties`:
-```properties
-openai.model.analysis=gpt-4o
-openai.model.analysis-fallback=gpt-4o-mini
-openai.model.simple=gpt-4o-mini
-openai.model.embedding=text-embedding-3-small
-```
-
-#### 🟠 Major · Security — Score API & CORS
-- `POST /api/v1/articles/*/score/update` no longer `permitAll()` (was a data-tampering risk in v3)
-- CORS allowed-origins moved to env var (`cors.allowed-origins`) for safe production deployment
-
-#### 🟡 Minor · Configuration Externalization
-- Similarity threshold (0.88), dedup window (7 days), max context articles (40), Naver result count (10), and timeouts — all moved from hardcoded constants to `application.properties` for runtime tuning without redeployment.
-
-#### 🟡 Minor · Distributed Cache + Prompt Caching
-- Activated `spring-boot-starter-data-redis`
-- `RedisCacheManager` for distributed cache (replaces single-instance `ConcurrentMapCacheManager`)
-- `@Cacheable` keyed by article-body MD5 for prompt-level caching → repeated-article LLM calls drop to 0
-
-#### 🟡 Minor · Parallel Keyword Processing
-- v3 sequential `for (Keyword k : keywords)` loop replaced with `CompletableFuture.runAsync`
-- Total time approximates the slowest single keyword instead of the sum
-
-### Additional Issues (Self-Found, Beyond Mentor Scope)
-- `FakeKeywordEmbedding` (256-dim hashCode-based vector) had a dimension mismatch with real OpenAI 1536-dim embeddings — replaced with real `embeddingClient.embed(keyword)` calls.
-- Four departments (T_HR, T_MARKETING, T_STRATEGY, T_ENTERPRISE_B2B) had no keyword mapping → top-5 always empty for them. Fixed.
-- Score-range mismatch (README claimed 0–10, code returned 0–100) — reconciled.
-
----
-
-## 📊 Database Schema (selected)
-
-| Entity | Key Fields |
+| 영역 | 박건우 담당 |
 |---|---|
-| `User` | `user_id`, `email` (UNIQUE), `password` (BCrypt), `department` (ENUM), `reset_token` |
-| `Article` | `article_id`, `title`, `original_url` (UNIQUE), `body`, `source`, `published_at` |
-| `ArticleAnalysis` | `analysis_id`, `article_id` (FK), `user_id` (FK), `summary`, `insight`, `category`, `tags` (JSON) |
-| `ArticleEmbedding` | `embedding_id`, `article_id` (FK), `embedding` (JSON vector) |
-| `Keyword` | `keyword_id`, `keyword`, `approved`, `category`, `user_id` (FK) |
-| `ArticleFeedback` | `id`, `article_id` (FK), `user_id` (FK, nullable), `liked`, `feedback_text` |
-| `ArticleScore` | `score_id`, `article_id` (FK, UNIQUE), `score`, `like_count`, `dislike_count`, `view_count` |
+| 시스템 설계 | 7개 외부 소스 통합 + 10개 부서 ENUM × 4 카테고리 정규화 구조 |
+| 백엔드 구현 | Spring Boot 파이프라인 (ingestion → 분석 → 임베딩 → 스코어링) · JWT 인증 · 부서별 Top-5 알고리즘 |
+| AI 통합 | GPT-4o 분류 + text-embedding-3-small 임베딩 + 코사인 유사도 스코어링 |
+| 배포 | AWS EB + GitHub Actions ECR 파이프라인 |
+| 시니어 피드백 흡수 | SK 시니어 9건 지적을 매트릭스로 정리 → v4 리팩토링 계획서 작성 |
 
 ---
 
-## 🚦 API Surface (selected)
+## 🗺 로드맵
 
-### Auth
-- `POST /api/v1/auth/signup`
-- `POST /api/v1/auth/login`
-- `POST /api/v1/auth/forgot-password`
-- `POST /api/v1/auth/reset-password`
-- `PUT  /api/v1/auth/me/department`
+### v4 구현 (진행 중)
 
-### Pipeline
-- `POST /api/v1/articles/run-pipeline` (async)
+- [ ] **4-tier cost ladder** 실 코드 적용 (URL · Jaccard · vector ANN · GPT-4o)
+- [ ] **`@Retryable` + `@Recover` smaller-model fallback** 구현
+- [ ] **Redis Prompt 캐시** 도입 (기사 본문 MD5 키)
+- [ ] **트랜잭션 범위 분해** — per-write 최소 트랜잭션, 외부 API 분리
+- [ ] **`CompletableFuture.runAsync`** 키워드 병렬화
+- [ ] **`application.properties` 외부화** — 모든 하드코드 상수 추출
 
-### Articles
-- `GET  /api/v1/articles` (paginated · category & source filters)
-- `GET  /api/v1/articles/{id}`
-- `GET  /api/v1/articles/{id}/score`
-- `POST /api/v1/articles/{id}/score/update` *(auth required from v4)*
-- `POST /api/v1/articles/{id}/feedback`
-- `GET  /api/v1/articles/{id}/feedback/summary`
-- `GET  /api/v1/articles/{id}/pdf`
+### v4 검증
 
-### Keywords
-- `GET    /api/v1/keywords` · `POST` · `DELETE /{keywordId}`
-- `GET    /api/v1/keywords/others`
-- `POST   /api/v1/keywords/recommend`
-- `POST   /api/v1/keywords/approve`
-
-### Departments
-- `GET /api/v1/departments/{department}/articles/top5`
+- [ ] cost ladder 실 운영 수치 측정 (현재는 설계 목표일 뿐)
+- [ ] retry / fallback 카오스 테스트
 
 ---
 
-## 🚧 Status & Roadmap
+## 📚 저장소 안 참고 문서
 
-| Layer | v3 (Now) | v4 (Designed) | v5 (Future) |
-|---|---|---|---|
-| Pipeline | Sequential per-keyword | `CompletableFuture` parallel | Kafka-backed event-driven |
-| LLM cost control | Direct GPT-4o | 4-tier filter ladder | VectorDB ANN (Qdrant) |
-| Persistence | MySQL 8 | + Redis CacheManager | + read replicas |
-| Resilience | None | `@Retryable` + `@Recover` | + circuit breaker |
-| Observability | SLF4J basic | + Actuator + structured logging | + Prometheus + Grafana |
-| Auth | JWT 1h | JWT 1h + email-based reset link | + OAuth providers |
+- [`MENTOR_FEEDBACK_CHANGELOG.md`](MENTOR_FEEDBACK_CHANGELOG.md) — SK 시니어 9건 지적 → v4 재설계 1:1 매핑 매트릭스
+- [README.en.md](README.en.md) — 영문 버전
+- [README_v3_legacy.ko.md](README_v3_legacy.ko.md) — v3 시점 보존본 (역사적 자료)
 
 ---
 
-## 🛠️ Local Development
+## 🔗 연락처
 
-### Backend
-```bash
-cd insk-backend/backend
-./gradlew bootRun
-```
+**박건우 ｜ Backend Engineer**
 
-Required configuration (in `application.yml` or environment variables — **never commit secrets**):
-- `spring.datasource.url`, `spring.datasource.username`, `spring.datasource.password`
-- `openai.api-key`
-- `naver.client-id`, `naver.client-secret`
-- `jwt.secret`
-
-### Frontend
-```bash
-cd insk-frontend
-npm install
-npm run dev
-```
-
-Required env (`.env.local`): `NEXT_PUBLIC_API_BASE_URL`
-
----
-
-## 📖 Field Notes — From v1 Prototype to v3 Production
-
-The journey from a no-code Make + Streamlit prototype to a Spring Boot 3 / Next.js 15 production deployment is documented in four blog posts on velog.io/@gm-15:
-
-- [Development · Part 1 — Throwing the prototype away and deciding to build a real service](https://velog.io/@gm-15/INSK-%EA%B0%9C%EB%B0%9C%ED%8E%B81%ED%94%84%EB%A1%9C%ED%86%A0%ED%83%80%EC%9E%85%EC%9D%84-%EB%B2%84%EB%A6%AC%EA%B3%A0-%EC%B2%98%EC%9D%8C%EC%9C%BC%EB%A1%9C-%EC%84%9C%EB%B9%84%EC%8A%A4%EB%A5%BC-%EB%A7%8C%EB%93%A4%EA%B2%A0%EB%8B%A4%EA%B3%A0-%EA%B2%B0%EC%A0%95%ED%95%9C-%EC%88%9C%EA%B0%84)
-- [Development · Part 2 — From feature-centric to user-centric: the v3 redesign](https://velog.io/@gm-15/INSK-%EA%B0%9C%EB%B0%9C%ED%8E%B8-2)
-- [Deployment — What I assumed when shipping](https://velog.io/@gm-15/INSK-%EB%B0%B0%ED%8F%AC%ED%8E%B8)
-- [Troubleshooting — Five production issues and what they revealed about my design assumptions](https://velog.io/@gm-15/INSK-%ED%8A%B8%EB%9F%AC%EB%B8%94%EC%8A%88%ED%8C%85%ED%8E%B8)
-
-The troubleshooting post — written before the senior engineer review — already identified that the deepest production issues were not bugs but unverified assumptions baked into the architecture. The v4 redesign is the structural answer to that realization.
-
----
-
-## 🙏 Acknowledgments
-
-The v4 redesign is grounded in a code review by a senior engineer at **SKT AI Data Engineering team**, who walked through this codebase and pointed out both the critical risks and the engineering principles that should guide a v2 generation of the system. Every v3→v4 mapping is documented in [MENTOR_FEEDBACK_CHANGELOG.md](MENTOR_FEEDBACK_CHANGELOG.md).
-
----
-
-## 👤 Author
-
-**Park, Gunwoo (gm-15)**
-Software Engineering · Sangmyung University
+- 이메일: Gunwoo363@gmail.com
 - GitHub: [github.com/gm-15](https://github.com/gm-15)
 - Blog: [velog.io/@gm-15](https://velog.io/@gm-15)
-- Email: gunwoo363@gmail.com
