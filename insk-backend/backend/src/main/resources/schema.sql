@@ -1,11 +1,23 @@
+-- ============================================================================
+-- ⚠️ 데이터 보호 경고
+-- ============================================================================
+-- 이 파일의 DROP TABLE 구문은 v4 비용 사다리 작업 (2026-05-18) 시 비활성화됨.
+-- 이유: 학교 프로젝트 RAG 실험용 데이터(article·analysis·embedding)를 보존해야 함.
+--
+-- Spring Boot가 schema.sql을 자동 실행하면 운영 데이터가 전부 삭제됨.
+-- application.properties에 `spring.sql.init.mode=never` 설정 권장.
+--
+-- DB 완전 초기화가 필요하면 별도 SQL 파일(reset_db_complete.sql)을 수동 실행.
+-- ============================================================================
+
 SET FOREIGN_KEY_CHECKS = 0;
 
-DROP TABLE IF EXISTS article_embeddings;
-DROP TABLE IF EXISTS article_analyses;
-DROP TABLE IF EXISTS articles;
-DROP TABLE IF EXISTS department_keyword_rule;
-DROP TABLE IF EXISTS keywords;
-DROP TABLE IF EXISTS users;
+-- DROP TABLE IF EXISTS article_embeddings;
+-- DROP TABLE IF EXISTS article_analyses;
+-- DROP TABLE IF EXISTS articles;
+-- DROP TABLE IF EXISTS department_keyword_rule;
+-- DROP TABLE IF EXISTS keywords;
+-- DROP TABLE IF EXISTS users;
 
 SET FOREIGN_KEY_CHECKS = 1;
 

@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(grep -E \"\\\\.\\(md|docx|pptx|pdf\\)$\")",
+      "Bash(git fetch *)"
+    ]
+  }
+}
