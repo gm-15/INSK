@@ -17,6 +17,10 @@ public class EmbeddingClient {
     @Value("${openai.api.key}")
     private String apiKey;
 
+    // v4 비용 사다리 — 임베딩 모델 외부화 (멘토 피드백 #8 하드코딩 제거)
+    @Value("${openai.model.embedding:text-embedding-3-small}")
+    private String embeddingModel;
+
     private final RestTemplate restTemplate = new RestTemplate();
     private static final String EMBEDDING_URL = "https://api.openai.com/v1/embeddings";
 
@@ -29,7 +33,7 @@ public class EmbeddingClient {
                 log.warn("⚠️ Embedding 텍스트가 너무 길어서 잘랐습니다. 원본 길이: {}, 잘린 길이: {}", text.length(), truncatedText.length());
             }
 
-            EmbeddingRequest requestBody = new EmbeddingRequest("text-embedding-3-small", truncatedText);
+            EmbeddingRequest requestBody = new EmbeddingRequest(embeddingModel, truncatedText);
 
             HttpHeaders headers = new HttpHeaders();
             headers.setContentType(MediaType.APPLICATION_JSON);

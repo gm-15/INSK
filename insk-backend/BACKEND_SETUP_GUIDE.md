@@ -93,10 +93,28 @@ spring.datasource.password=<YOUR_MYSQL_PASSWORD>
 # JPA 설정
 spring.jpa.hibernate.ddl-auto=update  # 기존 테이블 유지하면서 스키마 업데이트
 
-# Redis (선택사항)
-spring.data.redis.host=localhost
-spring.data.redis.port=6379
+# 데이터 보호 (v4 작업) — schema.sql 자동 실행 차단
+spring.sql.init.mode=never
+
+# v4 비용 사다리 (멘토 피드백 #1, #2, #8 부분 적용)
+# OpenAI 모델 외부화 — 운영 중 application.properties로 전환 가능
+openai.model.analysis=gpt-4o-mini
+openai.model.simple=gpt-4o-mini
+openai.model.embedding=text-embedding-3-small
+
+# 제목 Jaccard 중복 체크 — 본문 임베딩 dedup 대체 (cheap heuristic)
+pipeline.title-jaccard-threshold=0.6
+pipeline.dedup-window-days=7
+
+# Redis (v4 분산 캐시, 현재 미연결)
+# spring.data.redis.host=localhost
+# spring.data.redis.port=6379
 ```
+
+> 💡 **모델 전환 가이드 (`openai.model.analysis`)**:
+> - `gpt-4o-mini`: 비용 약 1/15. 학교 프로젝트·데이터 수집·개발용 권장
+> - `gpt-4o`: 분석 품질 최상. 운영용 또는 품질 중요 시
+> - 코드 재배포 없이 application.properties만 수정 후 재시작
 
 ### 2. API 키 발급 및 설정
 

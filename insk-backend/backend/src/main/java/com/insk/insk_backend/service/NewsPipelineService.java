@@ -23,15 +23,19 @@ import com.insk.insk_backend.repository.KeywordRepository;
 import com.insk.insk_backend.repository.UserRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
+import java.util.Arrays;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 @Slf4j
 @Service
@@ -53,7 +57,16 @@ public class NewsPipelineService {
 
     private final ObjectMapper objectMapper = new ObjectMapper();
 
-    private static final double DUP_THRESHOLD = 0.88;
+    // v4 비용 사다리 — 제목 Jaccard 중복 체크 (멘토 피드백 #1, #8)
+    // 완벽 dedup 아닌 cheap heuristic 1차 필터. retrieval corpus 다양성 보존 우선.
+    @Value("${pipeline.title-jaccard-threshold:0.6}")
+    private double titleJaccardThreshold;
+
+    @Value("${pipeline.dedup-window-days:7}")
+    private int dedupWindowDays;
+
+    // 본문 임베딩 dedup 임계치는 제거됨 (cheap heuristic으로 대체).
+    // 운영 데이터로 ROC tuning 후 application.yml로 외부화 예정.
 
     @Transactional
     @Scheduled(cron = "0 0 8 * * *")
@@ -127,17 +140,19 @@ public class NewsPipelineService {
         for (NaverNewsDto item : list) {
 
             String url = item.getOriginalUrl();
-            if (articleRepository.existsByOriginalUrl(url)) continue;
-
-            String body = naverNewsClient.scrapeArticleBody(url);
-            if (body == null || body.isBlank()) continue;
-            if (isDuplicate(body)) continue;
-
-            OpenAIDto.AnalysisResponse ar = openAIClient.analyzeArticle(body);
-            if (ar == null) continue;
+            if (articleRepository.existsByOriginalUrl(url)) continue;   // [1] URL 매칭 ($0)
 
             // HTML 태그 제거 (예: <b></b>, <strong></strong> 등)
             String cleanTitle = removeHtmlTags(item.getTitle());
+
+            // [2] 제목 Jaccard ($0) — 스크래핑·LLM 호출 전 cheap heuristic
+            if (isDuplicateByTitle(cleanTitle)) continue;
+
+            String body = naverNewsClient.scrapeArticleBody(url);       // 스크래핑
+            if (body == null || body.isBlank()) continue;
+
+            OpenAIDto.AnalysisResponse ar = openAIClient.analyzeArticle(body); // [3] LLM 분석
+            if (ar == null) continue;
 
             Article a = Article.builder()
                     .title(cleanTitle)
@@ -165,16 +180,18 @@ public class NewsPipelineService {
         for (AITimesDto item : list) {
 
             String url = item.getOriginalUrl();
-            if (articleRepository.existsByOriginalUrl(url)) continue;
+            if (articleRepository.existsByOriginalUrl(url)) continue;   // [1] URL 매칭
+
+            // [2] 제목 Jaccard — LLM 호출 전 cheap heuristic
+            if (isDuplicateByTitle(item.getTitle())) continue;
 
             String body = (item.getSummary() == null ? "" : item.getSummary());
             if (body.length() < 10)
                 body = item.getTitle() + " " + body;
 
             if (body.isBlank()) continue;
-            if (isDuplicate(body)) continue;
 
-            OpenAIDto.AnalysisResponse ar = openAIClient.analyzeArticle(body);
+            OpenAIDto.AnalysisResponse ar = openAIClient.analyzeArticle(body); // [3] LLM
             if (ar == null) continue;
 
             Article a = Article.builder()
@@ -203,16 +220,18 @@ public class NewsPipelineService {
         for (TheGuruDto item : list) {
 
             String url = item.getOriginalUrl();
-            if (articleRepository.existsByOriginalUrl(url)) continue;
+            if (articleRepository.existsByOriginalUrl(url)) continue;   // [1] URL 매칭
+
+            // [2] 제목 Jaccard — LLM 호출 전 cheap heuristic
+            if (isDuplicateByTitle(item.getTitle())) continue;
 
             String body = (item.getSummary() == null ? "" : item.getSummary());
             if (body.length() < 10)
                 body = item.getTitle() + " " + body;
 
             if (body.isBlank()) continue;
-            if (isDuplicate(body)) continue;
 
-            OpenAIDto.AnalysisResponse ar = openAIClient.analyzeArticle(body);
+            OpenAIDto.AnalysisResponse ar = openAIClient.analyzeArticle(body); // [3] LLM
             if (ar == null) continue;
 
             Article a = Article.builder()
@@ -232,33 +251,74 @@ public class NewsPipelineService {
         }
     }
 
-    private boolean isDuplicate(String body) {
-        List<ArticleEmbedding> list = embeddingRepository.findAll();
-        if (list.isEmpty()) return false;
+    // ========================================================================
+    // v4 비용 사다리 — 제목 Jaccard 중복 체크 (LLM 호출 전 cheap heuristic)
+    //
+    // 변경 이력:
+    //   v3: 본문 전체를 OpenAI 임베딩 → DB 전체 임베딩(findAll, OOM 위험)과 코사인
+    //       비교 → 비용·메모리 양쪽 위험 (멘토 피드백 #1)
+    //   v4: 제목만 normalize 후 Jaccard 유사도. 최근 N일 윈도우 조회. API 비용 0.
+    //
+    // 한계 (의도적):
+    //   - 완벽 dedup 아님. 같은 사건 다른 매체 보도는 일부 통과 가능 (false negative)
+    //   - 다른 사건이지만 제목 유사어 많은 케이스는 거를 수 있음 (false positive)
+    //   - 학교 프로젝트 retrieval corpus 다양성 보존이 우선이라 보수적 임계치 채택
+    //   - 정밀 dedup은 향후 embedding ANN reranking 단계로 별도 처리 예정
+    // ========================================================================
 
-        List<Double> newEmb = embeddingClient.embed(body);
-        if (newEmb == null) return false;
-
-        for (ArticleEmbedding emb : list) {
-            try {
-                List<Double> oldEmb =
-                        objectMapper.readValue(emb.getEmbeddingJson(), new TypeReference<>() {});
-                double sim = cosine(newEmb, oldEmb);
-                if (sim >= DUP_THRESHOLD) return true;
-            } catch (Exception ignored) {}
-        }
-
-        return false;
+    /**
+     * 제목 정규화 — Jaccard 토큰화 전 노이즈 제거.
+     * lowercase + HTML 태그 + 특수문자 + 다중 공백 정리.
+     */
+    private String normalizeForJaccard(String title) {
+        if (title == null) return "";
+        return title
+                .toLowerCase()
+                .replaceAll("<[^>]+>", "")           // HTML 태그
+                .replaceAll("[\\p{Punct}]", " ")     // 특수문자 → 공백
+                .replaceAll("\\s+", " ")             // 다중 공백
+                .trim();
     }
 
-    private double cosine(List<Double> a, List<Double> b) {
-        double dot = 0, magA = 0, magB = 0;
-        for (int i = 0; i < a.size(); i++) {
-            dot += a.get(i) * b.get(i);
-            magA += a.get(i) * a.get(i);
-            magB += b.get(i) * b.get(i);
+    private Set<String> tokenize(String normalized) {
+        if (normalized == null || normalized.isBlank()) return new HashSet<>();
+        return new HashSet<>(Arrays.asList(normalized.split(" ")));
+    }
+
+    private double jaccardSimilarity(Set<String> a, Set<String> b) {
+        if (a.isEmpty() || b.isEmpty()) return 0.0;
+        Set<String> intersection = new HashSet<>(a);
+        intersection.retainAll(b);
+        Set<String> union = new HashSet<>(a);
+        union.addAll(b);
+        return (double) intersection.size() / union.size();
+    }
+
+    /**
+     * 제목 Jaccard 기반 중복 판정.
+     * 최근 N일치 제목만 조회 (findAll 금지, OOM 회피).
+     */
+    private boolean isDuplicateByTitle(String newTitle) {
+        if (newTitle == null || newTitle.isBlank()) return false;
+
+        LocalDateTime since = LocalDateTime.now().minusDays(dedupWindowDays);
+        List<String> recentTitles = articleRepository.findTitlesPublishedAfter(since);
+        if (recentTitles.isEmpty()) return false;
+
+        Set<String> newTokens = tokenize(normalizeForJaccard(newTitle));
+        if (newTokens.isEmpty()) return false;
+
+        for (String existing : recentTitles) {
+            Set<String> existingTokens = tokenize(normalizeForJaccard(existing));
+            double sim = jaccardSimilarity(newTokens, existingTokens);
+            if (sim >= titleJaccardThreshold) {
+                log.info("🔍 제목 중복 감지 (window={}d, threshold={}, sim={}): '{}' ~ '{}'",
+                        dedupWindowDays, titleJaccardThreshold, String.format("%.2f", sim),
+                        newTitle, existing);
+                return true;
+            }
         }
-        return dot / (Math.sqrt(magA) * Math.sqrt(magB));
+        return false;
     }
 
     private void saveEmbedding(Article article, String body) {

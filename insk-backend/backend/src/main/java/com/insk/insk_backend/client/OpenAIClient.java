@@ -18,6 +18,15 @@ public class OpenAIClient {
     @Value("${openai.api.key}")
     private String apiKey;
 
+    // v4 비용 사다리 — 모델 외부화 (멘토 피드백 #2, #8)
+    // analysis: 본문 분석 (요약·인사이트·카테고리·태그). 품질 중요한 경우 gpt-4o.
+    // simple: 번역·간단 작업. 비용 절감 (기본 gpt-4o-mini).
+    @Value("${openai.model.analysis:gpt-4o}")
+    private String analysisModel;
+
+    @Value("${openai.model.simple:gpt-4o-mini}")
+    private String simpleModel;
+
     private final String API_URL = "https://api.openai.com/v1/chat/completions";
     private final RestTemplate restTemplate = new RestTemplate();
     private final ObjectMapper objectMapper = new ObjectMapper();
@@ -62,8 +71,9 @@ public class OpenAIClient {
             headers.setBearerAuth(apiKey);
 
             // 번역은 JSON 모드 필요 X → jsonMode=false, systemPrompt=null
+            // simple 작업이라 gpt-4o-mini로 비용 절감
             OpenAIDto.ChatRequest req = new OpenAIDto.ChatRequest(
-                    "gpt-4o",
+                    simpleModel,
                     null,          // system message 없음
                     userPrompt,    // user message
                     false          // JSON 모드 아님 (그냥 텍스트)
@@ -96,8 +106,9 @@ public class OpenAIClient {
         headers.setContentType(MediaType.APPLICATION_JSON);
         headers.setBearerAuth(apiKey);
 
+        // analysis 모델 외부화 — application.properties에서 gpt-4o / gpt-4o-mini 전환
         OpenAIDto.ChatRequest requestBody = new OpenAIDto.ChatRequest(
-                "gpt-4o",          // 또는 gpt-4-turbo
+                analysisModel,
                 SYSTEM_PROMPT,     // 시스템 프롬프트
                 articleBody,       // 기사 본문
                 true               // JSON 모드 활성화 (모델이 JSON으로만 답하게)
