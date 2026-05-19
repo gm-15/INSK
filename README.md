@@ -11,9 +11,9 @@
 
 | 항목 | 내용 |
 |---|---|
-| 한 줄 | 7개 외부 소스 → 10개 부서 ENUM × 4 카테고리로 정규화하는 뉴스 인텔리전스 플랫폼 |
+| 한 줄 | 3개 뉴스 소스(Naver News / AI Times / The Guru) 통합 수집 → OpenAI 기반 분석 → 10개 부서 ENUM × 4 카테고리 정규화 뉴스 인텔리전스 플랫폼 |
 | 박건우 역할 | 팀 리드 (SK mySUNI 써니C 4기 출발 → 개인 고도화) |
-| 핵심 기술 | Spring Boot 3 · Java 21 · OpenAI GPT-4o · text-embedding-3-small · Spring Retry · Resilience4j · AWS Elastic Beanstalk |
+| 핵심 기술 (v3) | Spring Boot 3 · Java 21 · Spring Security · JPA · OpenAI GPT-4o · text-embedding-3-small · AWS Elastic Beanstalk |
 | v3 (배포 완료) | AWS EB 배포, GitHub Actions ECR 파이프라인, JWT 인증, 부서별 Top-5 추천 |
 | v4 (설계 완료, 구현 진행 중) | SKT AI Data Engineering 시니어 **9건 코드 리뷰 지적**을 매트릭스로 정리, 비용·신뢰성 재설계 원칙 결정 |
 | 정직 노트 | v4 cost ladder의 수치는 **설계 목표**. 운영비 실측은 아직 (실 사용자 받지 않음) |
@@ -196,7 +196,7 @@ INSK v3을 AWS Elastic Beanstalk에 배포한 뒤, **SK AI Data Engineering 팀 
 
 | 영역 | 박건우 담당 |
 |---|---|
-| 시스템 설계 | 7개 외부 소스 통합 + 10개 부서 ENUM × 4 카테고리 정규화 구조 |
+| 시스템 설계 | 3개 뉴스 소스(Naver / AITimes / TheGuru) + OpenAI 계열 3개 API 통합 + 10개 부서 ENUM × 4 카테고리 정규화 구조 |
 | 백엔드 구현 | Spring Boot 파이프라인 (ingestion → 분석 → 임베딩 → 스코어링) · JWT 인증 · 부서별 Top-5 알고리즘 |
 | AI 통합 | GPT-4o 분류 + text-embedding-3-small 임베딩 + 코사인 유사도 스코어링 |
 | 배포 | AWS EB + GitHub Actions ECR 파이프라인 |
