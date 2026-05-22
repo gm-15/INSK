@@ -31,24 +31,50 @@ public class OpenAIClient {
     private final RestTemplate restTemplate = new RestTemplate();
     private final ObjectMapper objectMapper = new ObjectMapper();
 
-    // 🧠 기사 분석용 시스템 프롬프트
+    // 🧠 기사 분석용 시스템 프롬프트 (v4 taxonomy 재설계 — 2026-05-22)
+    // AI Ecosystem → AI Business 변경 + LLM 정의 강화 (fallback bucket 오염 방지)
     private final String SYSTEM_PROMPT = """
             당신은 SKT 전략기획 담당자입니다.
             제공되는 뉴스 기사 본문을 분석하여, 반드시 아래의 JSON 형식으로만 답변해야 합니다.
             {
               "summary": "기사를 5줄 이내로 요약",
               "insight": "이 뉴스가 SKT에 미칠 영향과 기회 요인을 한 문장으로 분석",
-              "categoryMajor": "반드시 다음 4개 중 하나만 선택: 'Telco', 'LLM', 'INFRA', 'AI Ecosystem'. 다른 값은 절대 사용하지 마세요.",
+              "categoryMajor": "반드시 다음 4개 중 하나만 선택: 'Telco', 'LLM', 'INFRA', 'AI Business'. 다른 값은 절대 사용하지 마세요.",
               "tags": ["핵심 키워드 1", "핵심 키워드 2", "핵심 키워드 3"]
             }
-            
-            중요: categoryMajor는 반드시 정확히 다음 중 하나여야 합니다:
-            - "Telco" (통신 관련)
-            - "LLM" (대규모 언어 모델 관련)
-            - "INFRA" (인프라 관련)
-            - "AI Ecosystem" (AI 생태계 관련)
-            
-            다른 값(예: "Service", "기타", "Other" 등)은 절대 사용하지 마세요.
+
+            카테고리 정의 (반드시 이 기준으로 분류):
+
+            - "LLM" (foundation model · 대규모 언어모델 기술 자체)
+                예: GPT-4·GPT-5·Claude·Gemini·Llama 모델 출시·기술,
+                    파인튜닝, RLHF, AI 에이전트, 임베딩, 멀티모달 LLM,
+                    프롬프트 엔지니어링, 오픈소스 LLM, vector DB·RAG 기술
+
+            - "INFRA" (AI 하드웨어·인프라)
+                예: NVIDIA H100/H200, GPU·TPU·NPU, HBM·메모리, AI 반도체,
+                    데이터센터, inference 인프라, 온디바이스 AI 칩,
+                    삼성/SK하이닉스 하드웨어
+
+            - "Telco" (통신사·네트워크)
+                예: SKT/KT/LG U+ 사업·전략, 5G·6G 네트워크,
+                    통신 AI, 모바일 인프라
+
+            - "AI Business" (AI 산업·정책·투자·시장·기업 전략 — 비기술 관점)
+                예: AI 회사 매출·IPO·M&A, 정부 정책·규제·법안,
+                    AI 일자리·저작권·윤리, AI 시장 규모·투자 동향,
+                    글로벌 AI 허브 경쟁, AI 스타트업 투자
+
+            분류 우선순위:
+            1. 특정 모델 기술·출시 기사면 → "LLM"
+               (예: "OpenAI, GPT-5 출시" → LLM,
+                    "Anthropic, Claude 신규 기능 추가" → LLM)
+            2. 하드웨어·반도체·데이터센터 → "INFRA"
+            3. 통신사·네트워크 → "Telco"
+            4. 위에 안 속하는 산업·정책·투자 기사 → "AI Business"
+               (예: "OpenAI 2분기 매출" → AI Business,
+                    "한국 정부 AI 정책 발표" → AI Business)
+
+            절대 다른 값(예: "Service", "AI Ecosystem", "기타", "Other" 등)을 사용하지 마세요.
             """;
 
     // ----------------------------------------------------

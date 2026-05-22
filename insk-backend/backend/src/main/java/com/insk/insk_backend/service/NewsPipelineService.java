@@ -378,31 +378,35 @@ public class NewsPipelineService {
     
     /**
      * 카테고리를 검증하고 허용된 값으로 변환
-     * 허용된 카테고리: Telco, LLM, INFRA, AI Ecosystem
+     * v4 taxonomy 재설계 (2026-05-22): AI Ecosystem → AI Business 변경
+     * 허용된 카테고리: Telco, LLM, INFRA, AI Business
      */
     private String validateCategory(String category) {
         if (category == null || category.isBlank()) {
-            return "INFRA"; // 기본값
+            return "AI Business"; // 기본값 — 산업·정책 일반 뉴스 비중이 큼
         }
-        
+
         String normalized = category.trim();
-        
+
         // 정확히 일치하는 경우
-        if (normalized.equals("Telco") || normalized.equals("LLM") || 
-            normalized.equals("INFRA") || normalized.equals("AI Ecosystem")) {
+        if (normalized.equals("Telco") || normalized.equals("LLM") ||
+            normalized.equals("INFRA") || normalized.equals("AI Business")) {
             return normalized;
         }
-        
+
         // 대소문자 무시하고 비교
         String lower = normalized.toLowerCase();
         if (lower.equals("telco")) return "Telco";
         if (lower.equals("llm")) return "LLM";
         if (lower.equals("infra")) return "INFRA";
-        if (lower.contains("ai ecosystem") || lower.contains("ai-ecosystem")) return "AI Ecosystem";
-        
+        if (lower.contains("ai business") || lower.contains("ai-business")) return "AI Business";
+
+        // 구 카테고리 호환 (GPT가 "AI Ecosystem" 반환 시 마이그레이션)
+        if (lower.contains("ai ecosystem") || lower.contains("ai-ecosystem")) return "AI Business";
+
         // Service, 기타 등의 잘못된 카테고리는 기본값으로 변경
-        log.warn("⚠️ 잘못된 카테고리 감지: '{}', 기본값 'INFRA'로 변경", category);
-        return "INFRA";
+        log.warn("⚠️ 잘못된 카테고리 감지: '{}', 기본값 'AI Business'로 변경", category);
+        return "AI Business";
     }
     
     /**
