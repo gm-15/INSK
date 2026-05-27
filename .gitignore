@@ -1,1 +1,18 @@
 .claude/
+
+# 학교 프로젝트 (INSK-trend-forecast) 워크플로우 스크래치 파일
+# INSK 본 레포에 잘못 떨어진 파일들은 무시
+human_qa_benchmark_v1.jsonl
+human_qa_benchmark_v1.txt
+qa_candidates.txt
+
+# 세션 작업용 plan/research/draft 파일
+plan.md
+research.md
+
+# 로컬 운영 스크립트
+run_pipeline.ps1
+
+# IDE
+.idea/
+.vscode/
