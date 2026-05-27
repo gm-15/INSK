@@ -194,10 +194,11 @@ public class NewsPipelineService {
             OpenAIDto.AnalysisResponse ar = openAIClient.analyzeArticle(body); // [3] LLM
             if (ar == null) continue;
 
+            LocalDateTime parsedPubDate = item.getPublishedAt();
             Article a = Article.builder()
                     .title(item.getTitle())
                     .originalUrl(url)
-                    .publishedAt(LocalDateTime.now())
+                    .publishedAt(parsedPubDate != null ? parsedPubDate : LocalDateTime.now())
                     .createdAt(LocalDateTime.now())
                     .source("AITimes")
                     .country("KR")
@@ -234,10 +235,11 @@ public class NewsPipelineService {
             OpenAIDto.AnalysisResponse ar = openAIClient.analyzeArticle(body); // [3] LLM
             if (ar == null) continue;
 
+            LocalDateTime parsedPubDate = item.getPublishedAt();
             Article a = Article.builder()
                     .title(item.getTitle().replaceAll("<[^>]+>", ""))
                     .originalUrl(url)
-                    .publishedAt(LocalDateTime.now())
+                    .publishedAt(parsedPubDate != null ? parsedPubDate : LocalDateTime.now())
                     .createdAt(LocalDateTime.now())
                     .source("TheGuru")
                     .country("KR")
