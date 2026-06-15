@@ -4,7 +4,7 @@
 >
 > **Backend work that does not stop at feature delivery, but redesigns the system from the angles of operations, classification correctness, and scalability.** After v3 was deployed on AWS Elastic Beanstalk, 9 senior code review items from an SKT engineer drove a v4 cost and reliability rearchitecture (in progress).
 
-🎬 [Demo video](https://www.youtube.com/watch?v=WlKGbvbxHik) · 🇰🇷 [Korean README](README.md) · 📜 [v3 snapshot](README_v3_legacy.ko.md)
+🎬 [Demo video](https://www.youtube.com/watch?v=WlKGbvbxHik) · 🇰🇷 [Korean README](README.md) · 📜 [v3 snapshot](archive/README_v3_legacy.ko.md)
 
 ---
 
@@ -16,7 +16,7 @@
 | Period | 2025.07.01 ~ ongoing |
 | Role | Team Lead (started in SK mySUNI Sunny-C cohort 4, sole owner from v3 onward) |
 | Stack | Java 21 · Spring Boot 3.5.6 · MySQL 8 · Next.js 15 · OpenAI GPT-4o · text-embedding-3-small · AWS Elastic Beanstalk · GitHub Actions |
-| Status | v3 deployed on AWS EB; v4 cost ladder stages 1·2·4 in code; stage 3 ANN, Fallback and DLQ at design stage |
+| Status | v3 deployed on AWS EB; v4 cost ladder stages 1·2·4 in code (stage 3 ANN, Fallback, DLQ designed); department-recommendation silent failure fixed (merged in PR #3) |
 | Key asset | [MENTOR_FEEDBACK_CHANGELOG.md](MENTOR_FEEDBACK_CHANGELOG.md) ｜ 1:1 mapping from 9 SKT senior review items to v4 redesign |
 
 ### Data Flow (v3 + v4 Cost Ladder)
@@ -45,9 +45,12 @@ INSK automates this collection and analysis loop and returns only articles that 
 
 ### Core Contributions (Gunwoo Park)
 
-1. **Classification correctness recovery**: gpt-4o-mini was tagging LLM articles as AI Business, causing a 71% skew to one category. Redesigned the 4-category definitions (LLM · INFRA · Telco · AI Business) and the boundaries between them, rebuilt the SYSTEM_PROMPT, and ran a DB migration to restore balance.
-2. **v4 4-stage cost ladder design**: turned 9 SKT senior review items into PR-shaped work, splitting the pipeline into URL → Title Jaccard 0.85 → Vector ANN → GPT-4o so that the expensive LLM call only sees genuinely new articles.
-3. **Joint redesign of LLM cost and reliability**: externalised models (analysis / simple / embedding), designed fallback (gpt-4o → gpt-4o-mini), and a DLQ state machine (ANALYSIS_FAILED + separate reprocess).
+> Shared lens: even when the surface response (HTTP 200) looks fine, measure one level below to find the hidden defect.
+
+1. **Department-recommendation silent failure found and fixed (found by measurement, merged in PR #3)**: department Top-5 recommendation scores were all computed as 0. The cause was a dimension mismatch between article embeddings (OpenAI 1536-d) and keyword embeddings (placeholder 256-d): the exception was swallowed by `try-catch` and returned 0.0. The response code and articles looked normal, so it was invisible on the surface; it was found by logging and measuring the recommendation scores directly. Fixed by embedding keywords with the real OpenAI model, surfacing the dimension mismatch via an explicit exception and log (regression guard), and adding the 4 missing department mappings. Verified on live data that all 10 departments now recommend domain-appropriate articles.
+2. **Classification correctness recovery**: gpt-4o-mini was tagging LLM articles as AI Business, causing a 71% skew to one category. Redesigned the 4-category definitions (LLM · INFRA · Telco · AI Business) and their boundaries, rebuilt the SYSTEM_PROMPT, and ran a DB migration to restore balance. (A separate measurement case from the department recommendation.)
+3. **v4 4-stage cost ladder design**: turned 9 SKT senior review items into PR-shaped work, splitting the pipeline into URL → Title Jaccard 0.85 → Vector ANN → GPT-4o so that the expensive LLM call only sees genuinely new articles.
+4. **Joint redesign of LLM cost and reliability**: externalised models (analysis / simple / embedding), designed fallback (gpt-4o → gpt-4o-mini), and a DLQ state machine (ANALYSIS_FAILED + separate reprocess).
 
 ---
 
@@ -139,6 +142,7 @@ Failure handling (both 🟡 Designed)
 
 - **v3 in production**: AWS Elastic Beanstalk deploy, GitHub Actions ECR pipeline, 3-source collection, GPT-4o analysis + embedding, per-department Top-5 recommendation, JWT auth, likes/feedback, PDF export
 - **v4 partial**: cost ladder stages 1·2·4 (URL match + Title Jaccard + LLM call), OpenAI model externalisation (analysis / simple / embedding), taxonomy redesign (AI Ecosystem → AI Business + strengthened LLM definition), thresholds and dedup window externalised to application.properties
+- **Department-recommendation silent failure fix (merged in PR #3)**: placeholder 256-d keyword embeddings → real OpenAI 1536-d embeddings, dimension mismatch surfaced via exception + log (regression guard), 4 missing department mappings added, popularity-score baseline removed so relevance leads. Includes reproduction/regression tests and live verification.
 
 ---
 
@@ -159,6 +163,7 @@ Failure handling (both 🟡 Designed)
 - [x] Cost ladder stages 1·2 (URL + Title Jaccard)
 - [x] OpenAI model externalisation (analysis / simple / embedding)
 - [x] Taxonomy redesign (AI Business + strengthened LLM definition)
+- [x] Department-recommendation silent failure fix + popularity-score baseline redesign (PR #3)
 - [x] Threshold + dedup window externalisation
 - [ ] Cost ladder stage 3 (Vector ANN)
 - [ ] `@Retryable` + `@Recover` fallback
@@ -247,7 +252,7 @@ Scheduled run: `@Scheduled(cron = "0 0 8 * * *")`, daily 08:00 KST.
 - [PROJECT_SPECIFICATION.md](PROJECT_SPECIFICATION.md) ｜ Functional spec
 - [insk-backend/BACKEND_SETUP_GUIDE.md](insk-backend/BACKEND_SETUP_GUIDE.md) ｜ Local environment setup
 - [README.md](README.md) ｜ Korean master
-- [README_v3_legacy.ko.md](README_v3_legacy.ko.md) ｜ v3 snapshot
+- [archive/README_v3_legacy.ko.md](archive/README_v3_legacy.ko.md) ｜ v3 snapshot
 
 ---
 

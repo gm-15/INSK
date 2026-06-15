@@ -4,7 +4,7 @@
 >
 > **문제를 기능 구현으로 끝내지 않고, 운영·정합성·확장성 관점에서 다시 설계하는 백엔드 작업.** v3 AWS EB 배포 후 SKT 시니어 코드 리뷰 9건을 받아 v4 비용·신뢰성 리아키텍처로 진화 중.
 
-🎬 [Demo 영상](https://www.youtube.com/watch?v=WlKGbvbxHik) · 🇬🇧 [README.en.md](README.en.md) · 📜 [v3 보존본](README_v3_legacy.ko.md)
+🎬 [Demo 영상](https://www.youtube.com/watch?v=WlKGbvbxHik) · 🇬🇧 [README.en.md](README.en.md) · 📜 [v3 보존본](archive/README_v3_legacy.ko.md)
 
 ---
 
@@ -16,7 +16,7 @@
 | 활동 기간 | 2025.07.01 ~ 진행 중 |
 | 역할 | 팀 리드 (SK mySUNI 써니C 4기 출발, v3·v4 단독 고도화) |
 | 기술 스택 | Java 21 · Spring Boot 3.5.6 · MySQL 8 · Next.js 15 · OpenAI GPT-4o · text-embedding-3-small · AWS Elastic Beanstalk · GitHub Actions |
-| 상태 | v3 AWS EB 배포 완료, v4 비용 사다리 1·2·4단계 코드 반영, 3단계 ANN·Fallback·DLQ는 설계 단계 |
+| 상태 | v3 AWS EB 배포 완료, v4 비용 사다리 1·2·4단계 코드 반영(3단계 ANN·Fallback·DLQ는 설계), 부서 추천 silent failure 수정(PR #3 머지) |
 | 핵심 자산 | [MENTOR_FEEDBACK_CHANGELOG.md](MENTOR_FEEDBACK_CHANGELOG.md) ｜ SKT 시니어 9건 리뷰 → v4 재설계 1:1 매핑 |
 
 ### 데이터 플로우 (v3 + v4 비용 사다리)
@@ -45,9 +45,12 @@ INSK는 이 수집·분석 루프를 자동화하고, 부서별로 정말 관련
 
 ### 핵심 기여 (박건우)
 
-1. **분류 정합성 회복**: gpt-4o-mini가 LLM 기사를 AI Business로 분류해 한쪽 쏠림(71%)이 발생 → LLM · INFRA · Telco · AI Business 4 카테고리 정의·분리 기준을 다시 설계하고 SYSTEM_PROMPT 재구성 + DB 마이그레이션으로 회복.
-2. **v4 4단계 비용 사다리 설계**: SKT 시니어 9건 지적을 코드 PR 단위로 정리, URL → 제목 Jaccard 0.85 → 벡터 ANN → GPT-4o 단계로 분기시켜 LLM 호출을 신규 기사로만 한정.
-3. **LLM 호출 비용·신뢰성 양면 재설계**: 모델 외부화(analysis / simple / embedding), 폴백(gpt-4o → gpt-4o-mini), DLQ 상태 머신(ANALYSIS_FAILED + 별도 재처리)을 설계.
+> 공통 관점: 표면 응답(HTTP 200)이 정상이어도 한 단계 아래 결과를 측정해 숨은 결함을 찾는다.
+
+1. **부서 추천 silent failure 발견·수정 (측정으로 발견, PR #3 머지)**: 부서별 Top5 추천 점수가 전부 0으로 계산되는 silent failure를 발견. 원인은 기사 임베딩(OpenAI 1536차원)과 키워드 임베딩(placeholder 256차원)의 차원 불일치 예외를 `try-catch`가 0.0으로 삼킨 것. 응답 코드·기사 반환은 정상이라 표면에선 보이지 않았고, 추천 점수를 직접 로그로 측정해 발견. 키워드도 실제 OpenAI 임베딩을 쓰도록 수정하고 차원 불일치를 예외·로그로 노출(재발 방지) + 누락 4개 부서 매핑 추가. 라이브 데이터로 10개 부서 전체가 도메인 적합 기사를 추천함을 검증.
+2. **분류 정합성 회복**: gpt-4o-mini가 LLM 기사를 AI Business로 분류해 한쪽 쏠림(71%)이 발생 → LLM · INFRA · Telco · AI Business 4 카테고리 정의·분리 기준을 다시 설계하고 SYSTEM_PROMPT 재구성 + DB 마이그레이션으로 회복. (부서 추천과는 별개 측정 사례)
+3. **v4 4단계 비용 사다리 설계**: SKT 시니어 9건 지적을 코드 PR 단위로 정리, URL → 제목 Jaccard 0.85 → 벡터 ANN → GPT-4o 단계로 분기시켜 LLM 호출을 신규 기사로만 한정.
+4. **LLM 호출 비용·신뢰성 양면 재설계**: 모델 외부화(analysis / simple / embedding), 폴백(gpt-4o → gpt-4o-mini), DLQ 상태 머신(ANALYSIS_FAILED + 별도 재처리)을 설계.
 
 ---
 
@@ -70,6 +73,16 @@ INSK는 이 수집·분석 루프를 자동화하고, 부서별로 정말 관련
 | LLM | 4% | **20%** | **5배 회복** |
 
 > 분류 결과를 SQL로 조회한 뒤 71% 한쪽 쏠림을 발견, 카테고리 정의·분리 기준을 다시 설계해 SYSTEM_PROMPT 재구성 + DB SQL 마이그레이션으로 36건 재분류. 응답 코드·스키마는 모두 정상이었지만 분류 결과가 의미적으로 망가져 있던 사례.
+
+### 부서 추천 silent failure 수정 (2026-06, PR #3 머지)
+
+| 항목 | 수정 전 | 수정 후 |
+|---|---|---|
+| 추천 점수 | 전 부서 전부 0.0 (차원 불일치 예외 삼킴) | 정상 계산 |
+| 작동 부서 | 6/10 (4개 부서 빈 추천) | 10/10 |
+| 도메인 적합성 | 무의미 (전부 0점) | 10/10 부서가 자기 도메인 기사를 상위 추천 |
+
+> 부서별 Top5 추천이 placeholder 256차원 키워드 임베딩과 1536차원 기사 임베딩을 비교하다 차원 불일치 예외가 발생, `catch`가 0.0으로 삼켜 추천이 무력화돼 있었다. HTTP 200·기사 정상 반환이라 표면에선 안 보였고, 추천 점수를 직접 로그로 측정해 발견. 실제 임베딩 기반으로 교체한 뒤 라이브 데이터로 도메인 적합성을 확인(정성 검증). 라이브 검증에서 인기점수 baseline(무반응도 50점)이 상위를 독점하던 2차 이슈도 발견해, 부서 관련도를 주신호로 두고 인기점수 baseline을 제거한 뒤 보수적 가중치(0.2 상한)로만 가산하도록 재설계.
 
 ### 비용 사다리 예상 효과 (v4 청사진, 실측 아님)
 
@@ -139,6 +152,7 @@ Next.js 15.5.4 (App Router) + Tailwind CSS 4
 
 - **v3 운영**: AWS Elastic Beanstalk 배포, GitHub Actions ECR 파이프라인, 3개 소스 수집, GPT-4o 분석 + 임베딩, 부서별 Top-5 추천, JWT 인증, 좋아요·피드백, PDF 내보내기
 - **v4 부분 구현**: 비용 사다리 1·2·4단계 (URL 매칭 + 제목 Jaccard + LLM 호출), OpenAI 모델 외부화 (analysis / simple / embedding), taxonomy 재설계 (AI Ecosystem → AI Business + LLM 정의 강화), 임계치·dedup 윈도우 application.properties 외부화
+- **부서 추천 silent failure 수정 (PR #3 머지)**: placeholder 256차원 키워드 임베딩 → 실제 OpenAI 1536차원 임베딩, 차원 불일치 예외·로그 노출(재발 방지), 누락 4개 부서 매핑 추가, 인기점수 baseline 제거 후 관련도 주신호 재설계. 재현·회귀 테스트 + 라이브 검증 포함
 
 ---
 
@@ -160,6 +174,7 @@ Next.js 15.5.4 (App Router) + Tailwind CSS 4
 - [x] OpenAI 모델 외부화 (analysis / simple / embedding)
 - [x] taxonomy 재설계 (AI Business + LLM 정의 강화)
 - [x] 임계치·dedup 윈도우 외부화
+- [x] 부서 추천 silent failure 수정 + 인기점수 baseline 재설계 (PR #3)
 - [ ] 비용 사다리 3단계 (벡터 ANN)
 - [ ] `@Retryable` + `@Recover` fallback
 - [ ] DLQ 메커니즘 (ANALYSIS_FAILED + 별도 재처리)
@@ -247,7 +262,7 @@ Invoke-RestMethod "http://localhost:8080/api/v1/articles/run-pipeline" `
 - [PROJECT_SPECIFICATION.md](PROJECT_SPECIFICATION.md) ｜ 기능 명세
 - [insk-backend/BACKEND_SETUP_GUIDE.md](insk-backend/BACKEND_SETUP_GUIDE.md) ｜ 로컬 환경 셋업 상세
 - [README.en.md](README.en.md) ｜ 영문 버전 (한글 마스터 기준 번역)
-- [README_v3_legacy.ko.md](README_v3_legacy.ko.md) ｜ v3 시점 보존본
+- [archive/README_v3_legacy.ko.md](archive/README_v3_legacy.ko.md) ｜ v3 시점 보존본
 
 ---
 
