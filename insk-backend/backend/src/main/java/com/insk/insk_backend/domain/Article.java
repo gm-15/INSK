@@ -43,6 +43,15 @@ public class Article {
 
     // category 필드는 제거됨
 
+    /**
+     * LLM 분석 상태 (멘토 피드백 #5).
+     * 재시도·폴백 모두 실패한 기사는 유실하지 않고 FAILED로 저장해 재처리(DLQ) 대상으로 둔다.
+     * 기존 행은 null(레거시)로 두고, 신규 수집분부터 채워진다.
+     */
+    @Enumerated(EnumType.STRING)
+    @Column(name = "analysis_status", length = 20)
+    private AnalysisStatus analysisStatus;
+
     /** ✅ Builder 포함 */
     @Builder
     public Article(String title,
@@ -59,5 +68,14 @@ public class Article {
         this.source = source;
         this.country = country;
         this.language = language;
+    }
+
+    public void markAnalysisCompleted() {
+        this.analysisStatus = AnalysisStatus.COMPLETED;
+    }
+
+    /** 재시도·폴백 모두 실패 → 재처리 대기(DLQ). */
+    public void markAnalysisFailed() {
+        this.analysisStatus = AnalysisStatus.FAILED;
     }
 }

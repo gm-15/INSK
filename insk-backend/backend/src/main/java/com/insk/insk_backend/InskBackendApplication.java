@@ -7,10 +7,12 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.cache.annotation.EnableCaching;
 import org.springframework.context.annotation.Bean; // Bean import
 import org.springframework.data.jpa.repository.config.EnableJpaAuditing;
+import org.springframework.retry.annotation.EnableRetry;
 import org.springframework.scheduling.annotation.EnableScheduling;
 
 @EnableScheduling // 스케줄링 활성화
 @EnableJpaAuditing // JPA Auditing 활성화 (생성/수정 시간 자동 기록)
+@EnableRetry // @Retryable / @Recover 활성화 (멘토 피드백 #5)
 @SpringBootApplication
 @EnableCaching
 public class InskBackendApplication {

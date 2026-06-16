@@ -5,8 +5,9 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.insk.insk_backend.client.AITimesClient;
 import com.insk.insk_backend.client.EmbeddingClient;
 import com.insk.insk_backend.client.NaverNewsClient;
-import com.insk.insk_backend.client.OpenAIClient;
+import com.insk.insk_backend.client.OpenAiAnalysisException;
 import com.insk.insk_backend.client.TheGuruClient;
+import com.insk.insk_backend.domain.AnalysisStatus;
 import com.insk.insk_backend.domain.Article;
 import com.insk.insk_backend.domain.ArticleAnalysis;
 import com.insk.insk_backend.domain.ArticleEmbedding;
@@ -53,7 +54,7 @@ public class NewsPipelineService {
     private final TheGuruClient theGuruClient;
 
     private final EmbeddingClient embeddingClient;
-    private final OpenAIClient openAIClient;
+    private final LlmAnalysisService llmAnalysisService;
 
     private final ObjectMapper objectMapper = new ObjectMapper();
 
@@ -131,6 +132,33 @@ public class NewsPipelineService {
         }
     }
 
+    /**
+     * DLQ 재처리 (멘토 피드백 #5).
+     * 재시도·폴백 모두 실패해 ANALYSIS_FAILED로 보존된 기사를 본문 재수집 후 다시 분석한다.
+     * 다시 실패하면 FAILED를 유지해 다음 재처리 대상으로 남긴다.
+     */
+    @Transactional
+    public void reprocessFailedAnalyses() {
+        List<Article> failed = articleRepository.findByAnalysisStatus(AnalysisStatus.FAILED);
+        log.info("🔁 DLQ 재처리 시작: {}건", failed.size());
+
+        for (Article a : failed) {
+            String body = naverNewsClient.scrapeArticleBody(a.getOriginalUrl());
+            if (body == null || body.isBlank()) continue;
+
+            try {
+                OpenAIDto.AnalysisResponse ar = llmAnalysisService.analyze(body);
+                a.markAnalysisCompleted();
+                articleRepository.save(a);
+                saveEmbedding(a, body);
+                saveAnalysis(a, ar, null, null);
+                log.info("✅ DLQ 재처리 성공: {}", a.getTitle());
+            } catch (OpenAiAnalysisException e) {
+                log.warn("DLQ 재처리 재실패(FAILED 유지): {} ({})", a.getTitle(), e.getMessage());
+            }
+        }
+    }
+
     private void processNaver(List<NaverNewsDto> list, Keyword keyword, String userEmail) {
         User user = null;
         if (userEmail != null && !userEmail.isBlank()) {
@@ -151,9 +179,6 @@ public class NewsPipelineService {
             String body = naverNewsClient.scrapeArticleBody(url);       // 스크래핑
             if (body == null || body.isBlank()) continue;
 
-            OpenAIDto.AnalysisResponse ar = openAIClient.analyzeArticle(body); // [3] LLM 분석
-            if (ar == null) continue;
-
             Article a = Article.builder()
                     .title(cleanTitle)
                     .originalUrl(url)
@@ -164,8 +189,19 @@ public class NewsPipelineService {
                     .language("ko")
                     .build();
 
-            articleRepository.save(a);
+            OpenAIDto.AnalysisResponse ar;
+            try {
+                ar = llmAnalysisService.analyze(body);                  // [3] LLM 분석 (재시도+폴백)
+            } catch (OpenAiAnalysisException e) {
+                // 재시도·폴백 모두 실패 → 유실하지 않고 FAILED로 저장(DLQ), 재처리 대상
+                a.markAnalysisFailed();
+                articleRepository.save(a);
+                log.warn("분석 최종 실패, DLQ 저장: {} ({})", cleanTitle, e.getMessage());
+                continue;
+            }
 
+            a.markAnalysisCompleted();
+            articleRepository.save(a);
             saveEmbedding(a, body);
             saveAnalysis(a, ar, keyword, user);
         }
@@ -191,9 +227,6 @@ public class NewsPipelineService {
 
             if (body.isBlank()) continue;
 
-            OpenAIDto.AnalysisResponse ar = openAIClient.analyzeArticle(body); // [3] LLM
-            if (ar == null) continue;
-
             LocalDateTime parsedPubDate = item.getPublishedAt();
             Article a = Article.builder()
                     .title(item.getTitle())
@@ -205,8 +238,18 @@ public class NewsPipelineService {
                     .language("ko")
                     .build();
 
-            articleRepository.save(a);
+            OpenAIDto.AnalysisResponse ar;
+            try {
+                ar = llmAnalysisService.analyze(body);                  // [3] LLM (재시도+폴백)
+            } catch (OpenAiAnalysisException e) {
+                a.markAnalysisFailed();
+                articleRepository.save(a);
+                log.warn("분석 최종 실패, DLQ 저장: {} ({})", item.getTitle(), e.getMessage());
+                continue;
+            }
 
+            a.markAnalysisCompleted();
+            articleRepository.save(a);
             saveEmbedding(a, body);
             saveAnalysis(a, ar, null, user);
         }
@@ -232,9 +275,6 @@ public class NewsPipelineService {
 
             if (body.isBlank()) continue;
 
-            OpenAIDto.AnalysisResponse ar = openAIClient.analyzeArticle(body); // [3] LLM
-            if (ar == null) continue;
-
             LocalDateTime parsedPubDate = item.getPublishedAt();
             Article a = Article.builder()
                     .title(item.getTitle().replaceAll("<[^>]+>", ""))
@@ -246,8 +286,18 @@ public class NewsPipelineService {
                     .language("ko")
                     .build();
 
-            articleRepository.save(a);
+            OpenAIDto.AnalysisResponse ar;
+            try {
+                ar = llmAnalysisService.analyze(body);                  // [3] LLM (재시도+폴백)
+            } catch (OpenAiAnalysisException e) {
+                a.markAnalysisFailed();
+                articleRepository.save(a);
+                log.warn("분석 최종 실패, DLQ 저장: {} ({})", item.getTitle(), e.getMessage());
+                continue;
+            }
 
+            a.markAnalysisCompleted();
+            articleRepository.save(a);
             saveEmbedding(a, body);
             saveAnalysis(a, ar, null, user);
         }
