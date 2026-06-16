@@ -3,6 +3,7 @@ package com.insk.insk_backend.config;
 import com.insk.insk_backend.jwt.JwtAuthenticationFilter;
 import com.insk.insk_backend.security.CustomUserDetailsService;
 import lombok.RequiredArgsConstructor;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.http.HttpMethod;
@@ -20,6 +21,7 @@ import org.springframework.web.cors.CorsConfiguration;
 import org.springframework.web.cors.CorsConfigurationSource;
 import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
 
+import java.util.Arrays;
 import java.util.List;
 
 @Configuration
@@ -29,6 +31,10 @@ public class SecurityConfig {
 
     private final JwtAuthenticationFilter jwtAuthenticationFilter;
     private final CustomUserDetailsService userDetailsService;
+
+    // 멘토 #7: CORS 허용 출처 외부화 (배포 환경별로 프로퍼티/환경변수로 주입). 기본값은 로컬 개발 서버.
+    @Value("${cors.allowed-origins:http://localhost:3000}")
+    private String allowedOrigins;
 
     /** ▣ PasswordEncoder */
     @Bean
@@ -51,11 +57,19 @@ public class SecurityConfig {
         return configuration.getAuthenticationManager();
     }
 
+    /** 쉼표로 구분된 cors.allowed-origins 문자열을 trim 후 리스트로 변환. */
+    private List<String> parseAllowedOrigins() {
+        return Arrays.stream(allowedOrigins.split(","))
+                .map(String::trim)
+                .filter(s -> !s.isBlank())
+                .toList();
+    }
+
     /** ▣ CORS 설정 */
     @Bean
     public CorsConfigurationSource corsConfigurationSource() {
         CorsConfiguration configuration = new CorsConfiguration();
-        configuration.setAllowedOrigins(List.of("http://localhost:3000"));
+        configuration.setAllowedOrigins(parseAllowedOrigins());
         configuration.setAllowedMethods(List.of("GET", "POST", "PUT", "DELETE", "OPTIONS"));
         configuration.setAllowedHeaders(List.of("*"));
         configuration.setAllowCredentials(true);
@@ -99,7 +113,9 @@ public class SecurityConfig {
                         // 기사 조회(GET)는 Public
                         .requestMatchers(HttpMethod.GET, "/api/v1/articles/**").permitAll()
 
-                        .requestMatchers(HttpMethod.POST, "/api/v1/articles/*/score").permitAll()
+                        // 멘토 #6: 점수 재계산 POST는 유료 임베딩을 호출하므로 인증 필수
+                        // (기존 permitAll 매처는 실제 경로 '/score/update'와 어긋난 dead config라 제거).
+                        // 점수 변경 엔드포인트는 아래 anyRequest().authenticated()로 보호된다.
 
                         // 키워드 관련은 인증 필요
                         .requestMatchers("/api/v1/keywords/**").authenticated()
