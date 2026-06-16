@@ -66,6 +66,11 @@ public class NewsPipelineService {
     @Value("${pipeline.dedup-window-days:7}")
     private int dedupWindowDays;
 
+    // DLQ 재처리 한도 (멘토 피드백 #5). 초과 시 DEAD로 격리해 영구 실패 기사의 유료 호출을 차단.
+    // 비용 knob이라 외부화. 필드 초기값(3)은 Spring 미주입 환경(단위 테스트)용 안전값.
+    @Value("${openai.dlq.max-reprocess-attempts:3}")
+    private int maxReprocessAttempts = 3;
+
     // 본문 임베딩 dedup 임계치는 제거됨 (cheap heuristic으로 대체).
     // 운영 데이터로 ROC tuning 후 application.yml로 외부화 예정.
 
@@ -135,7 +140,8 @@ public class NewsPipelineService {
     /**
      * DLQ 재처리 (멘토 피드백 #5).
      * 재시도·폴백 모두 실패해 ANALYSIS_FAILED로 보존된 기사를 본문 재수집 후 다시 분석한다.
-     * 다시 실패하면 FAILED를 유지해 다음 재처리 대상으로 남긴다.
+     * 재실패하면 retry_count를 올리고, 한도(maxReprocessAttempts) 초과 시 DEAD로 격리해
+     * 재처리 풀(FAILED 조회)에서 빼 영구 실패 기사의 유료 호출 비용을 차단한다.
      */
     @Transactional
     public void reprocessFailedAnalyses() {
@@ -154,7 +160,15 @@ public class NewsPipelineService {
                 saveAnalysis(a, ar, null, null);
                 log.info("✅ DLQ 재처리 성공: {}", a.getTitle());
             } catch (OpenAiAnalysisException e) {
-                log.warn("DLQ 재처리 재실패(FAILED 유지): {} ({})", a.getTitle(), e.getMessage());
+                a.incrementRetryCount();
+                if (a.getRetryCount() >= maxReprocessAttempts) {
+                    a.markDead();   // 한도 초과 → 영구 격리, 다음 재처리부터 조회 제외
+                    log.warn("DLQ 재처리 {}회 초과 → DEAD 격리: {}", maxReprocessAttempts, a.getTitle());
+                } else {
+                    log.warn("DLQ 재처리 재실패({}/{}, FAILED 유지): {} ({})",
+                            a.getRetryCount(), maxReprocessAttempts, a.getTitle(), e.getMessage());
+                }
+                articleRepository.save(a);   // retry_count·DEAD 영속화
             }
         }
     }

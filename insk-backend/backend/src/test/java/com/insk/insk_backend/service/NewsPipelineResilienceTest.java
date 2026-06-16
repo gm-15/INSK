@@ -87,4 +87,51 @@ class NewsPipelineResilienceTest {
                 .as("재시도·폴백 모두 실패한 기사는 버리지 않고 FAILED로 보존")
                 .isEqualTo(AnalysisStatus.FAILED);
     }
+
+    @Test
+    @DisplayName("DLQ 재처리가 한도(기본 3회) 초과하면 DEAD로 격리해 재처리 풀에서 제외한다(비용 차단)")
+    void reprocessExceedingLimit_isolatesAsDead() {
+        // given: 이미 2회 재처리한 FAILED 기사 (다음 재실패면 3회 = 한도 도달)
+        Article article = Article.builder().title("t").originalUrl("https://example.com/1").build();
+        article.markAnalysisFailed();
+        article.incrementRetryCount();
+        article.incrementRetryCount();
+
+        when(articleRepository.findByAnalysisStatus(AnalysisStatus.FAILED)).thenReturn(List.of(article));
+        when(naverNewsClient.scrapeArticleBody(any())).thenReturn("기사 본문");
+        when(llmAnalysisService.analyze(any()))
+                .thenThrow(new OpenAiAnalysisException("재처리도 실패", new RuntimeException("boom")));
+
+        // when
+        service.reprocessFailedAnalyses();
+
+        // then: 한도 도달 → DEAD 격리, 영속화됨
+        assertThat(article.getRetryCount()).isEqualTo(3);
+        assertThat(article.getAnalysisStatus())
+                .as("재처리 한도 초과 기사는 DEAD로 영구 격리")
+                .isEqualTo(AnalysisStatus.DEAD);
+        verify(articleRepository, times(1)).save(article);
+    }
+
+    @Test
+    @DisplayName("DLQ 재처리가 한도 미만이면 retry_count만 올리고 FAILED로 유지한다")
+    void reprocessUnderLimit_staysFailed() {
+        // given: 아직 0회 재처리한 FAILED 기사
+        Article article = Article.builder().title("t").originalUrl("https://example.com/2").build();
+        article.markAnalysisFailed();
+
+        when(articleRepository.findByAnalysisStatus(AnalysisStatus.FAILED)).thenReturn(List.of(article));
+        when(naverNewsClient.scrapeArticleBody(any())).thenReturn("기사 본문");
+        when(llmAnalysisService.analyze(any()))
+                .thenThrow(new OpenAiAnalysisException("재처리 실패", new RuntimeException("boom")));
+
+        // when
+        service.reprocessFailedAnalyses();
+
+        // then: 한도 미만 → 카운트만 증가, 다음 회차 위해 FAILED 유지
+        assertThat(article.getRetryCount()).isEqualTo(1);
+        assertThat(article.getAnalysisStatus())
+                .as("한도 미만은 다음 재처리 위해 FAILED 유지")
+                .isEqualTo(AnalysisStatus.FAILED);
+    }
 }
