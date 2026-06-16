@@ -1,5 +1,6 @@
 package com.insk.insk_backend.repository;
 
+import com.insk.insk_backend.domain.AnalysisStatus;
 import com.insk.insk_backend.domain.Article;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
@@ -12,6 +13,9 @@ public interface ArticleRepository extends JpaRepository<Article, Long> {
 
     boolean existsByOriginalUrl(String originalUrl);
     List<Article> findByTitleContainingIgnoreCaseOrderByPublishedAtDesc(String title);
+
+    /** DLQ 재처리용: 분석이 최종 실패한 기사 목록 (멘토 피드백 #5). */
+    List<Article> findByAnalysisStatus(AnalysisStatus analysisStatus);
 
     /**
      * v4 비용 사다리 — 제목 Jaccard 중복 체크용 윈도우 쿼리.

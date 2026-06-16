@@ -128,13 +128,26 @@ public class OpenAIClient {
     // ✅ 2. 기사 분석용 메서드 (기존대로 유지)
     // ----------------------------------------------------
     public OpenAIDto.AnalysisResponse analyzeArticle(String articleBody) {
+        // 기존 호출부 호환용: 실패 시 null 반환.
+        try {
+            return analyzeArticle(articleBody, analysisModel);
+        } catch (OpenAiAnalysisException e) {
+            log.error("OpenAI API 분석 실패: {}", e.getMessage());
+            return null;
+        }
+    }
+
+    /**
+     * 모델을 지정해 기사 본문을 분석한다. 실패 시 {@link OpenAiAnalysisException}을 던져
+     * 상위에서 재시도(@Retryable)·폴백(@Recover)으로 다룰 수 있게 한다.
+     */
+    public OpenAIDto.AnalysisResponse analyzeArticle(String articleBody, String model) {
         HttpHeaders headers = new HttpHeaders();
         headers.setContentType(MediaType.APPLICATION_JSON);
         headers.setBearerAuth(apiKey);
 
-        // analysis 모델 외부화 — application.properties에서 gpt-4o / gpt-4o-mini 전환
         OpenAIDto.ChatRequest requestBody = new OpenAIDto.ChatRequest(
-                analysisModel,
+                model,
                 SYSTEM_PROMPT,     // 시스템 프롬프트
                 articleBody,       // 기사 본문
                 true               // JSON 모드 활성화 (모델이 JSON으로만 답하게)
@@ -151,12 +164,11 @@ public class OpenAIClient {
             String jsonContent =
                     root.path("choices").path(0).path("message").path("content").asText();
 
-            // content 안에 있는 JSON 문자열을 AnalysisResponse DTO로 변환
             return objectMapper.readValue(jsonContent, OpenAIDto.AnalysisResponse.class);
 
         } catch (Exception e) {
-            log.error("OpenAI API 분석 실패: {}", e.getMessage());
-            return null;
+            // null로 삼키지 않고 예외로 노출 → 재시도·폴백 가능
+            throw new OpenAiAnalysisException("OpenAI 분석 실패 (model=" + model + "): " + e.getMessage(), e);
         }
     }
 }
