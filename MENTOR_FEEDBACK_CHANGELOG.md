@@ -6,6 +6,17 @@
 
 ---
 
+> ⚠️ **이 문서는 2026-03-04 계획 단계 작성본입니다.** 클래스·메서드명은 실제 구현명으로 갱신했고(`LlmAnalysisService`·`ArticlePersistenceService`·`analyze`·`recover`), **접근이 달라진 부분**은 아래 표로 갈음합니다. 멘토 원문·V3 문제 코드는 정확합니다. 상세 의사결정은 [docs/TECHNICAL_DECISIONS.md](docs/TECHNICAL_DECISIONS.md).
+>
+> | 계획 문서 표기 | 실제 구현 |
+> |---|---|
+> | `DuplicateCheckService`(신규 생성) | **신규 클래스 없음** — `NewsPipelineService.isDuplicateByTitle`(제목 Jaccard) |
+> | #2 예시 `analysis=gpt-4o` / `analysis-fallback=gpt-4o-mini` | 실제 **`analysis=gpt-4o-mini`**(분석도 비용상 mini) / **`analysis-fallback=gpt-4o`**(폴백이 상위 모델) |
+> | #4 **키워드** 단위 병렬 + `taskExecutor` 5/10 | **기사 단위** 병렬 + 전용 `pipelineItemExecutor`(4/8). `taskExecutor`(2/5) 재사용 시 nested 데드락이라 분리 |
+> | #5 in-process retry | + **DLQ**(`AnalysisStatus` FAILED→한도초과 `DEAD` + `retry_count`) + `@Scheduled` 자동 재처리 |
+> | #9 MD5 **프롬프트** 캐시(`@Cacheable` on `analyze`) | `RedisConfig`(JDK 직렬화) + **부서 Top5** 캐시(`@Cacheable` on `getTop5`). 프롬프트 캐시는 미적용 |
+> | (추가) 외부 API 타임아웃 | `RestTemplateConfig`(connect 5s/read 120s, 외부화) — 멘토 권고 반영 |
+
 ## 피드백 1. 중복 체크 로직의 비효율성 및 메모리 리스크
 
 ### 멘토 원문
@@ -144,7 +155,7 @@ public OpenAIDto.AnalysisResponse analyzeArticle(String articleBody, String mode
 // translateKeyword → gpt-4o-mini 사용 (90% 비용 절감)
 ```
 
-**`LlmCallService.java`에서 모델 결정 책임 집중**:
+**`LlmAnalysisService.java`에서 모델 결정 책임 집중**:
 ```java
 @Value("${openai.model.analysis}")
 private String analysisModel;   // gpt-4o
@@ -222,7 +233,7 @@ private void processItem(...) {
 }
 ```
 
-**신규 생성**: `ArticleSaveService.java`
+**신규 생성**: `ArticlePersistenceService.java`
 - `@Transactional` 메서드만 모아놓는 전용 클래스
 - 각 메서드가 독립 트랜잭션으로 동작
 
@@ -307,7 +318,7 @@ implementation 'org.springframework.retry:spring-retry'
 implementation 'org.springframework:spring-aspects'
 ```
 
-**신규 생성**: `LlmCallService.java`
+**신규 생성**: `LlmAnalysisService.java`
 
 ```java
 // ✅ V4 — Exponential Backoff Retry + Fallback
@@ -317,12 +328,12 @@ implementation 'org.springframework:spring-aspects'
     backoff = @Backoff(delay = 1000, multiplier = 2.0, maxDelay = 30000)
     // 1초 → 2초 → 4초 → 8초 → 16초 → 실패
 )
-public OpenAIDto.AnalysisResponse analyzeWithRetry(String body) {
+public OpenAIDto.AnalysisResponse analyze(String body) {
     return openAIClient.analyzeArticle(body, analysisModel);
 }
 
 @Recover  // 5회 모두 실패 시 fallback 모델로 1회 시도
-public OpenAIDto.AnalysisResponse fallbackAnalyze(Exception e, String body) {
+public OpenAIDto.AnalysisResponse recover(Exception e, String body) {
     log.warn("Primary 모델 실패, fallback: {}", fallbackModel);
     return openAIClient.analyzeArticle(body, fallbackModel);
 }
@@ -494,12 +505,12 @@ public RedisCacheManager cacheManager(RedisConnectionFactory connectionFactory) 
 }
 ```
 
-**`LlmCallService.java`** 프롬프트 캐시:
+**`LlmAnalysisService.java`** 프롬프트 캐시:
 ```java
 // 동일 기사 재처리 시 LLM 호출 0회 (Redis에 결과 캐싱)
 @Cacheable(cacheNames = "articleAnalysis",
     key = "T(org.springframework.util.DigestUtils).md5DigestAsHex(#body.bytes)")
-public OpenAIDto.AnalysisResponse analyzeWithRetry(String body) { ... }
+public OpenAIDto.AnalysisResponse analyze(String body) { ... }
 ```
 
 ---
@@ -554,7 +565,7 @@ private double normalize(double raw) {
 | API 호출 전 중복 체크 | 🔴 Critical | `DuplicateCheckService.java` | 신규 생성 |
 | @Transactional 범위 | 🔴 Critical | `NewsPipelineService.java` | 어노테이션 제거 |
 | 모델 하드코딩 | 🟠 Major | `OpenAIClient.java`, `application.properties` | 외부화 |
-| Retry 부재 | 🟠 Major | `LlmCallService.java` | 신규 생성 |
+| Retry 부재 | 🟠 Major | `LlmAnalysisService.java` | 신규 생성 |
 | Score API permitAll | 🟠 Major | `SecurityConfig.java` | 1줄 삭제 |
 | CORS 하드코딩 | 🟠 Major | `SecurityConfig.java`, `application.properties` | 환경변수화 |
 | 임계치 하드코딩 | 🟡 Minor | `application.properties` | 외부화 |

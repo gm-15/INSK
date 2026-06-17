@@ -50,7 +50,7 @@ INSK automates this collection and analysis loop and returns only articles that 
 1. **Department-recommendation silent failure found and fixed (found by measurement, merged in PR #3)**: department Top-5 recommendation scores were all computed as 0. The cause was a dimension mismatch between article embeddings (OpenAI 1536-d) and keyword embeddings (placeholder 256-d): the exception was swallowed by `try-catch` and returned 0.0. The response code and articles looked normal, so it was invisible on the surface; it was found by logging and measuring the recommendation scores directly. Fixed by embedding keywords with the real OpenAI model, surfacing the dimension mismatch via an explicit exception and log (regression guard), and adding the 4 missing department mappings. Verified on live data that all 10 departments now recommend domain-appropriate articles.
 2. **Classification correctness recovery**: gpt-4o-mini was tagging LLM articles as AI Business, causing a 71% skew to one category. Redesigned the 4-category definitions (LLM · INFRA · Telco · AI Business) and their boundaries, rebuilt the SYSTEM_PROMPT, and ran a DB migration to restore balance. (A separate measurement case from the department recommendation.)
 3. **v4 4-stage cost ladder design**: turned 9 SKT senior review items into PR-shaped work, splitting the pipeline into URL → Title Jaccard 0.85 → Vector ANN → GPT-4o so that the expensive LLM call only sees genuinely new articles.
-4. **Joint redesign of LLM cost and reliability**: externalised models (analysis / simple / embedding), designed fallback (gpt-4o → gpt-4o-mini), and a DLQ state machine (ANALYSIS_FAILED + separate reprocess).
+4. **Joint redesign of LLM cost and reliability**: externalised models (analysis / simple / embedding — externalised so per-task models can be assigned; currently analysis also runs on gpt-4o-mini for cost), fallback (gpt-4o-mini → gpt-4o), and a DLQ state machine (ANALYSIS_FAILED + separate reprocess).
 
 ---
 
@@ -185,7 +185,7 @@ Failure handling (both 🟡 Designed)
 | Backend (v3) | Spring Boot 3.5.6 · Java 21 · Gradle · Spring Data JPA · Hibernate · MySQL 8.0 · Spring Security · jjwt 0.12.x · BCrypt · Jsoup 1.17.2 · Spring WebFlux · PDFBox 2.0.30 · iText 7.2.5 · `@Async` ThreadPoolTaskExecutor |
 | Backend (v4 planned) | Spring Retry · Resilience4j · RedisCacheManager |
 | Frontend | Next.js 15.5.4 (App Router) · React 19.1 · TypeScript 5 · Tailwind CSS 4 · Axios |
-| AI / Data | OpenAI GPT-4o (article analysis) · text-embedding-3-small (semantic embedding) · gpt-4o-mini (low-cost branch) |
+| AI / Data | OpenAI gpt-4o-mini (article analysis, default; switchable via externalised config) · gpt-4o (fallback) · text-embedding-3-small (semantic embedding) |
 | Infrastructure | AWS Elastic Beanstalk (ap-northeast-2) · AWS ECR (multi-stage Docker) · GitHub Actions (test → build → ECR push → S3 → EB deploy with Ready-state polling) |
 
 ---
