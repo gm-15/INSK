@@ -57,8 +57,8 @@ dependencies {
 	implementation 'io.jsonwebtoken:jjwt-api:0.12.5'
 	runtimeOnly 'io.jsonwebtoken:jjwt-impl:0.12.5'
 	runtimeOnly 'io.jsonwebtoken:jjwt-jackson:0.12.5'
-	// 4주차: Redis 캐싱을 위한 의존성 추가
-	//implementation 'org.springframework.boot:spring-boot-starter-data-redis'
+	// 멘토 피드백 #9: Redis 분산 캐시 (부서 Top-5 추천 결과 캐싱)
+	implementation 'org.springframework.boot:spring-boot-starter-data-redis'
 
 	implementation 'com.itextpdf:kernel:7.2.5'
 	implementation 'com.itextpdf:layout:7.2.5'

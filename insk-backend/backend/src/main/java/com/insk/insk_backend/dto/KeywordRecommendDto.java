@@ -3,6 +3,7 @@ package com.insk.insk_backend.dto;
 import com.insk.insk_backend.domain.DepartmentType;
 import lombok.*;
 
+import java.io.Serializable;
 import java.util.List;
 
 public class KeywordRecommendDto {
@@ -32,7 +33,7 @@ public class KeywordRecommendDto {
     @NoArgsConstructor
     @AllArgsConstructor
     @Builder
-    public static class Candidate {
+    public static class Candidate implements Serializable {
         private String keyword;
         private String category;
     }
@@ -42,7 +43,7 @@ public class KeywordRecommendDto {
     @NoArgsConstructor
     @AllArgsConstructor
     @Builder
-    public static class RecommendResponse {
+    public static class RecommendResponse implements Serializable {
         private List<Candidate> recommended;
     }
 
