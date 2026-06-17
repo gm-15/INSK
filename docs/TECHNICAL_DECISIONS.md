@@ -14,8 +14,8 @@
   - Resilience4j: 서킷브레이커·rate limiter·bulkhead·메트릭까지 갖춘 종합 툴킷.
 - **선택**: **Spring Retry**.
 - **우리 프로젝트에 맞는 이유**: 우리에게 필요한 건 "지수 백오프 재시도 + 폴백 모델" 딱 그만큼이었다. 서킷브레이커·rate limiter가 필요한 고트래픽 마이크로서비스가 아니라 **하루 한 번 도는 배치**다. 레퍼런스도 "단순·경량 재시도엔 Spring Retry, 고급 복원력엔 Resilience4j"로 권한다. 의존성·러닝커브를 늘리지 않고 80% 케이스를 덮는 선택.
-- **한계**: 서킷브레이커가 없어 장애가 지속되면 매번 재시도 비용을 치른다(그래서 DLQ의 `retry_count`/`DEAD`로 영구 실패를 격리해 보완 → 결정 2). 모든 예외를 일괄 재시도하므로 비일시적 오류(400)도 재시도하는 낭비 여지.
-- **참고**: [reflectoring: Retry with Spring Boot and Resilience4j](https://reflectoring.io/retry-with-springboot-resilience4j/) · [Baeldung: Circuit Breaker vs Retry](https://www.baeldung.com/spring-boot-circuit-breaker-vs-retry)
+- **한계**: 서킷브레이커가 없어 장애가 지속되면 매번 재시도 비용을 치른다(그래서 DLQ의 `retry_count`/`DEAD`로 영구 실패를 격리해 보완 → 결정 2). 모든 예외를 일괄 재시도하므로 비일시적 오류(400)도 재시도하는 낭비 여지. 또한 Spring Retry는 **Spring Framework 7에서 코어로 흡수돼 유지보수 모드** — 우리 Spring Boot 3.5.6(Framework 6.x)에선 여전히 표준 방식이다.
+- **참고**: [Resilience4j 공식 저장소](https://github.com/resilience4j/resilience4j) — 6개 모듈(CircuitBreaker·RateLimiter·Bulkhead·Retry·TimeLimiter·Cache)을 가진 종합 fault-tolerance 툴킷 · [Spring Retry 공식 저장소](https://github.com/spring-projects/spring-retry) — 재시도 전용(`@Retryable`/`@Recover`/`@Backoff`)
 
 ## 2. DLQ(분석 실패 보존) — DB status 컬럼 (vs Kafka 메시지 큐)
 
@@ -26,7 +26,7 @@
 - **선택**: **DB status 컬럼** (`ANALYSIS_FAILED` → 한도 초과 시 `DEAD`).
 - **우리 프로젝트에 맞는 이유**: DLQ는 **패턴**이고 카프카 전용이 아니다(카프카도 native DLQ가 없어 별도 토픽으로 직접 구현). 우리는 **저처리량 배치 + 단일 MySQL** 환경이라, 레퍼런스가 권하는 "임계·저처리량 실패는 DB 테이블로 보존(ACID·관계형 조회·기존 백업/보안 재사용)"에 정확히 해당한다. `status` + `retry_count` + 한도 초과 격리는 레퍼런스의 DLQ 테이블 설계와 동일한 구성.
 - **한계**: 큐가 아니라 테이블이므로 "queue"라 부르면 오해(정확히는 dead-letter table). 영구 실패가 누적되면 정리(TTL/아카이브)가 필요. 고처리량·이벤트 기반으로 가면 메시지 큐 재검토.
-- **참고**: [UBOS: PostgreSQL Dead-Letter Queue](https://ubos.tech/news/postgresql-dead%E2%80%91letter-queue-efficient-failure-handling-in-kafka-pipelines/) · [SystemDR: The Dead Letter Queue Pattern](https://javatsc.substack.com/p/day-26-the-dead-letter-queue-pattern)
+- **참고**: [SystemDR: The Dead Letter Queue Pattern](https://javatsc.substack.com/p/day-26-the-dead-letter-queue-pattern) — DB 테이블·메시지큐·하이브리드 방식과 status enum(`CREATED→PROCESSING→RETRYING→DEAD_LETTER`) 기반 추적을 다룸
 
 ## 3. 분산 캐시 — Redis (vs 로컬 ConcurrentMapCacheManager)
 
@@ -49,7 +49,7 @@
 - **선택**: **`ArticlePersistenceService`(별도 빈)로 짧은 트랜잭션 분리.**
 - **우리 프로젝트에 맞는 이유**: 레퍼런스가 권하는 "트랜잭션 범위에서 외부 API 호출은 분리하라, 별도 클래스로 빼면 트랜잭션이 잘 작동한다"를 그대로 적용. `@Transactional`은 AOP 프록시라 같은 클래스 self-invocation엔 안 먹으므로 **별도 빈**이라야 새 트랜잭션이 열린다. 외부 호출 중 커넥션을 놓아 풀 고갈을 막으면서도, 저장 3개를 한 트랜잭션으로 묶어 원자성을 지켰다. 제약된 풀(3)·동시 9 측정에서 커넥션 점유 1,544ms→비점유 509ms(3.0배).
 - **한계**: 기사 **간** 원자성은 없음(의도 — 한 건 실패가 배치를 롤백하면 안 됨). detached 엔티티 FK 참조로 저장.
-- **참고**: [velog: External API in @Transactional](https://velog.io/@kwon_yongil_/External-API-in-Transactional) · [velog: 트랜잭션 범위에서는 필요한 로직만 호출하자](https://velog.io/@glencode/%ED%8A%B8%EB%9E%9C%EC%9E%AD%EC%85%98-%EB%B2%94%EC%9C%84%EC%97%90%EC%84%9C%EB%8A%94-%ED%95%84%EC%9A%94%ED%95%9C-%EB%A1%9C%EC%A7%81%EB%A7%8C-%ED%98%B8%EC%B6%9C%ED%95%98%EC%9E%90)
+- **참고**: [velog: 트랜잭션 범위에서는 필요한 로직만 호출하자](https://velog.io/@glencode/%ED%8A%B8%EB%9E%9C%EC%9E%AD%EC%85%98-%EB%B2%94%EC%9C%84%EC%97%90%EC%84%9C%EB%8A%94-%ED%95%84%EC%9A%94%ED%95%9C-%EB%A1%9C%EC%A7%81%EB%A7%8C-%ED%98%B8%EC%B6%9C%ED%95%98%EC%9E%90) — "외부 API 호출은 트랜잭션 밖으로 분리, 네트워크 지연 시 커넥션 풀 고갈", 프록시 self-invocation 한계까지 짚음
 
 ## 5. 병렬 처리 — CompletableFuture + 전용 풀 (vs @Async / 공용 ForkJoinPool)
 
@@ -61,4 +61,4 @@
 - **선택**: **`CompletableFuture.runAsync(task, pipelineItemExecutor)` + `allOf().join()`**, 전용 풀 분리.
 - **우리 프로젝트에 맞는 이유**: 레퍼런스가 경고하듯 commonPool은 I/O 집약 작업에서 스레드 기아를 부른다 → I/O 바운드 전용 풀로 격리. 또 파이프라인이 `@Async("taskExecutor")`에서 도는데 **같은 풀에 per-item 작업을 또 얹고 join하면 nested 풀 고갈(데드락)** → 그래서 `taskExecutor`와 분리한 `pipelineItemExecutor`(max 8)를 따로 뒀고, 풀 크기가 **동시 OpenAI 호출 상한(rate limit 방어)** 역할도 한다. 결과를 변환·체이닝할 게 없는 fan-out/fan-in이라 `thenApply` 같은 콜백은 불필요해 안 썼다. 24건·건당 200ms·pool 8 측정에서 순차 5,041ms→병렬 631ms(8.0배).
 - **한계**: 같은 배치 내 제목 dedup이 병렬에선 약해짐(서로 미커밋이라 안 보임 — best-effort heuristic이라 허용). 동시성은 풀 크기(8)가 상한. `join`은 블로킹(목적이 "논블로킹"이 아니라 "병렬 실행"이라 의도적).
-- **참고**: [Baeldung: CompletableFuture and ThreadPool](https://www.baeldung.com/java-completablefuture-threadpool) · [DZone: Be Aware of ForkJoinPool#commonPool()](https://dzone.com/articles/be-aware-of-forkjoinpoolcommonpool)
+- **참고**: [DZone: Be Aware of ForkJoinPool#commonPool()](https://dzone.com/articles/be-aware-of-forkjoinpoolcommonpool) — 공용 풀은 CPU 코어 수에 따라 스레드 수가 달라지고 블로킹 작업엔 부적합 → 전용 풀 격리 근거
