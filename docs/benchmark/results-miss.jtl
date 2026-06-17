@@ -1,0 +1,11 @@
+timeStamp,elapsed,label,responseCode,responseMessage,threadName,dataType,success,failureMessage,bytes,sentBytes,grpThreads,allThreads,URL,Latency,IdleTime,Connect
+1781694474819,4216,GET department top5,200,,Top5 Load 1-1,text,true,,1440,163,1,1,http://host.docker.internal:8080/api/v1/articles/top5/T_AI_SERVICE,4211,0,56
+1781694479038,3826,GET department top5,200,,Top5 Load 1-1,text,true,,1440,163,1,1,http://host.docker.internal:8080/api/v1/articles/top5/T_AI_SERVICE,3825,0,0
+1781694482867,3794,GET department top5,200,,Top5 Load 1-1,text,true,,1440,163,1,1,http://host.docker.internal:8080/api/v1/articles/top5/T_AI_SERVICE,3794,0,0
+1781694486662,3756,GET department top5,200,,Top5 Load 1-1,text,true,,1438,163,1,1,http://host.docker.internal:8080/api/v1/articles/top5/T_AI_SERVICE,3755,0,0
+1781694490419,3685,GET department top5,200,,Top5 Load 1-1,text,true,,1440,163,1,1,http://host.docker.internal:8080/api/v1/articles/top5/T_AI_SERVICE,3684,0,0
+1781694494105,4384,GET department top5,200,,Top5 Load 1-1,text,true,,1440,163,1,1,http://host.docker.internal:8080/api/v1/articles/top5/T_AI_SERVICE,4383,0,0
+1781694498490,3917,GET department top5,200,,Top5 Load 1-1,text,true,,1442,163,1,1,http://host.docker.internal:8080/api/v1/articles/top5/T_AI_SERVICE,3916,0,0
+1781694502404,3829,GET department top5,200,,Top5 Load 1-1,text,true,,1440,163,1,1,http://host.docker.internal:8080/api/v1/articles/top5/T_AI_SERVICE,3828,0,0
+1781694506234,4329,GET department top5,200,,Top5 Load 1-1,text,true,,1440,163,1,1,http://host.docker.internal:8080/api/v1/articles/top5/T_AI_SERVICE,4329,0,0
+1781694510566,3769,GET department top5,200,,Top5 Load 1-1,text,true,,1440,163,1,1,http://host.docker.internal:8080/api/v1/articles/top5/T_AI_SERVICE,3768,0,0

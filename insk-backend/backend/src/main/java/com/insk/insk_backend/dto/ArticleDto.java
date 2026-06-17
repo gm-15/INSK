@@ -90,8 +90,9 @@ public class ArticleDto {
     }
 
         @Getter
+        @NoArgsConstructor
         @AllArgsConstructor
-        public static class SimpleResponse {
+        public static class SimpleResponse implements Serializable {
             private Long articleId;
             private String title;
             private String url;

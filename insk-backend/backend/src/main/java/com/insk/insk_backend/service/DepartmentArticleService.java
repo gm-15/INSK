@@ -15,6 +15,7 @@ import com.insk.insk_backend.repository.ArticleRepository;
 import com.insk.insk_backend.repository.ArticleScoreRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.cache.annotation.Cacheable;
 import org.springframework.stereotype.Service;
 
 import java.util.Comparator;
@@ -38,6 +39,7 @@ public class DepartmentArticleService {
     // 부서 추천에서 전역 인기점수가 줄 수 있는 최대 가산(부서별 관련도를 덮지 않도록 소폭).
     private static final double POPULARITY_BOOST = 0.2;
 
+    @Cacheable(cacheNames = "departmentTop5", key = "#dept.name()")
     public List<ArticleDto.SimpleResponse> getTop5(DepartmentType dept) {
 
         List<String> keywords = interestService.getInterestKeywords(dept);
