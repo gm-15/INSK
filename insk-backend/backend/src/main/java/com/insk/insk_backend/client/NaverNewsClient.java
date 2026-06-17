@@ -26,7 +26,11 @@ public class NaverNewsClient {
     private String clientSecret;
 
     private final String API_URL = "https://openapi.naver.com/v1/search/news.json";
-    private final RestTemplate restTemplate = new RestTemplate();
+    private final RestTemplate restTemplate;   // 멘토 #5: 타임아웃 설정된 외부 API 전용 RestTemplate 주입
+
+    public NaverNewsClient(RestTemplate externalApiRestTemplate) {
+        this.restTemplate = externalApiRestTemplate;
+    }
 
     /**
      * Naver News API를 호출하여 뉴스 목록을 가져옵니다.

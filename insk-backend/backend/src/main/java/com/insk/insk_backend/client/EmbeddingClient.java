@@ -21,8 +21,12 @@ public class EmbeddingClient {
     @Value("${openai.model.embedding:text-embedding-3-small}")
     private String embeddingModel;
 
-    private final RestTemplate restTemplate = new RestTemplate();
+    private final RestTemplate restTemplate;   // 멘토 #5: 타임아웃 설정된 외부 API 전용 RestTemplate 주입
     private static final String EMBEDDING_URL = "https://api.openai.com/v1/embeddings";
+
+    public EmbeddingClient(RestTemplate externalApiRestTemplate) {
+        this.restTemplate = externalApiRestTemplate;
+    }
 
     public List<Double> embed(String text) {
         try {

@@ -136,6 +136,7 @@ public class NewsPipelineService {
      * 재실패하면 retry_count를 올리고, 한도(maxReprocessAttempts) 초과 시 DEAD로 격리해
      * 재처리 풀(FAILED 조회)에서 빼 영구 실패 기사의 유료 호출 비용을 차단한다.
      */
+    @Scheduled(cron = "${pipeline.dlq-reprocess-cron:0 0 */6 * * *}")  // 멘토 #5: DLQ 자동 드레인(기본 6시간마다)
     public void reprocessFailedAnalyses() {
         List<Article> failed = articleRepository.findByAnalysisStatus(AnalysisStatus.FAILED);
         log.info("🔁 DLQ 재처리 시작: {}건", failed.size());

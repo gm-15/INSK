@@ -28,8 +28,12 @@ public class OpenAIClient {
     private String simpleModel;
 
     private final String API_URL = "https://api.openai.com/v1/chat/completions";
-    private final RestTemplate restTemplate = new RestTemplate();
+    private final RestTemplate restTemplate;   // 멘토 #5: 타임아웃 설정된 외부 API 전용 RestTemplate 주입
     private final ObjectMapper objectMapper = new ObjectMapper();
+
+    public OpenAIClient(RestTemplate externalApiRestTemplate) {
+        this.restTemplate = externalApiRestTemplate;
+    }
 
     // 🧠 기사 분석용 시스템 프롬프트 (v4 taxonomy 재설계 — 2026-05-22)
     // AI Ecosystem → AI Business 변경 + LLM 정의 강화 (fallback bucket 오염 방지)
