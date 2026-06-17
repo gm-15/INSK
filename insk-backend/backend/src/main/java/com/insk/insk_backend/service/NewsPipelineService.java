@@ -1,7 +1,9 @@
 package com.insk.insk_backend.service;
 
+import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.insk.insk_backend.client.AITimesClient;
+import com.insk.insk_backend.client.QdrantClient;
 import com.insk.insk_backend.client.EmbeddingClient;
 import com.insk.insk_backend.client.NaverNewsClient;
 import com.insk.insk_backend.client.OpenAiAnalysisException;
@@ -51,6 +53,8 @@ public class NewsPipelineService {
     private final ArticlePersistenceService persistenceService;
     // 멘토 #4: 기사별 처리 병렬화 전용 풀 (빈 이름과 필드명이 같아 by-name 주입).
     private final Executor pipelineItemExecutor;
+    // 멘토 #1: 분석 임베딩을 VectorDB(Qdrant)에 색인 (brute-force cosine 대체)
+    private final QdrantClient qdrantClient;
 
     private final ObjectMapper objectMapper = new ObjectMapper();
 
@@ -150,6 +154,7 @@ public class NewsPipelineService {
                 OpenAIDto.AnalysisResponse ar = llmAnalysisService.analyze(body);
                 String embeddingJson = embedJson(body);
                 persistenceService.persistAnalyzed(a, embeddingJson, ar, null, null);
+                indexVector(a, embeddingJson);
                 log.info("✅ DLQ 재처리 성공: {}", a.getTitle());
             } catch (OpenAiAnalysisException e) {
                 boolean dead = persistenceService.persistReprocessFailure(a, maxReprocessAttempts);
@@ -295,6 +300,18 @@ public class NewsPipelineService {
         }
         String embeddingJson = embedJson(body);
         persistenceService.persistAnalyzed(a, embeddingJson, ar, keyword, user);
+        indexVector(a, embeddingJson);   // 멘토 #1: 벡터를 Qdrant에 색인(트랜잭션 밖)
+    }
+
+    /** 본문 임베딩 JSON을 파싱해 Qdrant에 벡터 색인(트랜잭션 밖 외부 호출). 실패는 무시. */
+    private void indexVector(Article a, String embeddingJson) {
+        if (embeddingJson == null) return;
+        try {
+            List<Double> v = objectMapper.readValue(embeddingJson, new TypeReference<List<Double>>() {});
+            qdrantClient.upsert(a.getArticleId(), v);
+        } catch (Exception e) {
+            log.warn("Qdrant 색인 실패 articleId={}: {}", a.getArticleId(), e.getMessage());
+        }
     }
 
     // ========================================================================

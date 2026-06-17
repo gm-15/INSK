@@ -4,6 +4,7 @@ import com.insk.insk_backend.client.AITimesClient;
 import com.insk.insk_backend.client.EmbeddingClient;
 import com.insk.insk_backend.client.NaverNewsClient;
 import com.insk.insk_backend.client.OpenAiAnalysisException;
+import com.insk.insk_backend.client.QdrantClient;
 import com.insk.insk_backend.client.TheGuruClient;
 import com.insk.insk_backend.domain.Article;
 import com.insk.insk_backend.domain.Keyword;
@@ -45,13 +46,14 @@ class NewsPipelineResilienceTest {
     private final EmbeddingClient embeddingClient = mock(EmbeddingClient.class);
     private final LlmAnalysisService llmAnalysisService = mock(LlmAnalysisService.class);
     private final ArticlePersistenceService persistenceService = mock(ArticlePersistenceService.class);
+    private final QdrantClient qdrantClient = mock(QdrantClient.class);
 
     // 병렬 실행을 동기(인라인)로 만들어 검증을 결정적으로 — Executor.execute(r) → r.run()
     private final NewsPipelineService service = new NewsPipelineService(
             keywordRepository, articleRepository, userRepository,
             naverNewsClient, aiTimesClient, theGuruClient,
             embeddingClient, llmAnalysisService, persistenceService,
-            Runnable::run);
+            Runnable::run, qdrantClient);
 
     @Test
     @DisplayName("재시도·폴백 모두 실패하면 기사를 버리지 않고 persistFailed로 보존 위임한다(DLQ)")
