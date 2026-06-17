@@ -50,7 +50,7 @@ INSK는 이 수집·분석 루프를 자동화하고, 부서별로 정말 관련
 1. **부서 추천 silent failure 발견·수정 (측정으로 발견, PR #3 머지)**: 부서별 Top5 추천 점수가 전부 0으로 계산되는 silent failure를 발견. 원인은 기사 임베딩(OpenAI 1536차원)과 키워드 임베딩(placeholder 256차원)의 차원 불일치 예외를 `try-catch`가 0.0으로 삼킨 것. 응답 코드·기사 반환은 정상이라 표면에선 보이지 않았고, 추천 점수를 직접 로그로 측정해 발견. 키워드도 실제 OpenAI 임베딩을 쓰도록 수정하고 차원 불일치를 예외·로그로 노출(재발 방지) + 누락 4개 부서 매핑 추가. 라이브 데이터로 10개 부서 전체가 도메인 적합 기사를 추천함을 검증.
 2. **분류 정합성 회복**: gpt-4o-mini가 LLM 기사를 AI Business로 분류해 한쪽 쏠림(71%)이 발생 → LLM · INFRA · Telco · AI Business 4 카테고리 정의·분리 기준을 다시 설계하고 SYSTEM_PROMPT 재구성 + DB 마이그레이션으로 회복. (부서 추천과는 별개 측정 사례)
 3. **v4 4단계 비용 사다리 설계**: SKT 시니어 9건 지적을 코드 PR 단위로 정리, URL → 제목 Jaccard 0.85 → 벡터 ANN → GPT-4o 단계로 분기시켜 LLM 호출을 신규 기사로만 한정.
-4. **LLM 호출 비용·신뢰성 양면 재설계**: 모델 외부화(analysis / simple / embedding), 폴백(gpt-4o → gpt-4o-mini), DLQ 상태 머신(ANALYSIS_FAILED + 별도 재처리)을 설계.
+4. **LLM 호출 비용·신뢰성 양면 재설계**: 모델 외부화(analysis / simple / embedding — 외부화로 작업별 지정 가능, 현재는 비용상 분석도 gpt-4o-mini), 폴백(gpt-4o-mini → gpt-4o), DLQ 상태 머신(ANALYSIS_FAILED + 별도 재처리).
 
 ---
 
@@ -195,7 +195,7 @@ Next.js 15.5.4 (App Router) + Tailwind CSS 4
 | Backend (v3) | Spring Boot 3.5.6 · Java 21 · Gradle · Spring Data JPA · Hibernate · MySQL 8.0 · Spring Security · jjwt 0.12.x · BCrypt · Jsoup 1.17.2 · Spring WebFlux · PDFBox 2.0.30 · iText 7.2.5 · `@Async` ThreadPoolTaskExecutor |
 | Backend (v4 예정) | Spring Retry · Resilience4j · RedisCacheManager |
 | Frontend | Next.js 15.5.4 (App Router) · React 19.1 · TypeScript 5 · Tailwind CSS 4 · Axios |
-| AI / Data | OpenAI GPT-4o (기사 분석) · text-embedding-3-small (의미 임베딩) · gpt-4o-mini (저비용 분기) |
+| AI / Data | OpenAI gpt-4o-mini (기사 분석·기본, 외부화로 변경 가능) · gpt-4o (폴백) · text-embedding-3-small (의미 임베딩) |
 | Infrastructure | AWS Elastic Beanstalk (ap-northeast-2) · AWS ECR (multi-stage Docker) · GitHub Actions (test → build → ECR push → S3 → EB deploy with Ready-state polling) |
 
 ---
