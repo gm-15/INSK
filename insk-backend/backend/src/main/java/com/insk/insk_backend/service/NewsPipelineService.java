@@ -1,6 +1,5 @@
 package com.insk.insk_backend.service;
 
-import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.insk.insk_backend.client.AITimesClient;
 import com.insk.insk_backend.client.EmbeddingClient;
@@ -9,16 +8,12 @@ import com.insk.insk_backend.client.OpenAiAnalysisException;
 import com.insk.insk_backend.client.TheGuruClient;
 import com.insk.insk_backend.domain.AnalysisStatus;
 import com.insk.insk_backend.domain.Article;
-import com.insk.insk_backend.domain.ArticleAnalysis;
-import com.insk.insk_backend.domain.ArticleEmbedding;
 import com.insk.insk_backend.domain.Keyword;
 import com.insk.insk_backend.domain.User;
 import com.insk.insk_backend.dto.AITimesDto;
 import com.insk.insk_backend.dto.NaverNewsDto;
 import com.insk.insk_backend.dto.OpenAIDto;
 import com.insk.insk_backend.dto.TheGuruDto;
-import com.insk.insk_backend.repository.ArticleAnalysisRepository;
-import com.insk.insk_backend.repository.ArticleEmbeddingRepository;
 import com.insk.insk_backend.repository.ArticleRepository;
 import com.insk.insk_backend.repository.KeywordRepository;
 import com.insk.insk_backend.repository.UserRepository;
@@ -28,15 +23,14 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
 import java.util.Arrays;
-import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
-import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.Executor;
 
 @Slf4j
 @Service
@@ -45,8 +39,6 @@ public class NewsPipelineService {
 
     private final KeywordRepository keywordRepository;
     private final ArticleRepository articleRepository;
-    private final ArticleAnalysisRepository analysisRepository;
-    private final ArticleEmbeddingRepository embeddingRepository;
     private final UserRepository userRepository;
 
     private final NaverNewsClient naverNewsClient;
@@ -55,6 +47,10 @@ public class NewsPipelineService {
 
     private final EmbeddingClient embeddingClient;
     private final LlmAnalysisService llmAnalysisService;
+    // 멘토 #3: DB 쓰기(짧은 트랜잭션) 전담. 외부 호출은 이 클래스(트랜잭션 밖)에서 끝낸다.
+    private final ArticlePersistenceService persistenceService;
+    // 멘토 #4: 기사별 처리 병렬화 전용 풀 (빈 이름과 필드명이 같아 by-name 주입).
+    private final Executor pipelineItemExecutor;
 
     private final ObjectMapper objectMapper = new ObjectMapper();
 
@@ -74,7 +70,6 @@ public class NewsPipelineService {
     // 본문 임베딩 dedup 임계치는 제거됨 (cheap heuristic으로 대체).
     // 운영 데이터로 ROC tuning 후 application.yml로 외부화 예정.
 
-    @Transactional
     @Scheduled(cron = "0 0 8 * * *")
     public void runPipeline() {
         // 스케줄러는 사용자 정보 없이 실행 (전체 사용자 대상)
@@ -85,12 +80,10 @@ public class NewsPipelineService {
      * 비동기로 파이프라인 실행 (타임아웃 방지)
      */
     @Async("taskExecutor")
-    @Transactional
     public void runPipelineAsync(String userEmail) {
         runPipelineSync(userEmail);
     }
 
-    @Transactional
     public void runPipelineSync(String userEmail) {
         try {
             log.info("🚀 뉴스 파이프라인 실행 시작 (사용자: {})", userEmail);
@@ -143,55 +136,50 @@ public class NewsPipelineService {
      * 재실패하면 retry_count를 올리고, 한도(maxReprocessAttempts) 초과 시 DEAD로 격리해
      * 재처리 풀(FAILED 조회)에서 빼 영구 실패 기사의 유료 호출 비용을 차단한다.
      */
-    @Transactional
     public void reprocessFailedAnalyses() {
         List<Article> failed = articleRepository.findByAnalysisStatus(AnalysisStatus.FAILED);
         log.info("🔁 DLQ 재처리 시작: {}건", failed.size());
 
         for (Article a : failed) {
+            // 외부 호출(스크랩·분석·임베딩)은 트랜잭션 밖, DB 쓰기만 persistenceService의 짧은 트랜잭션.
             String body = naverNewsClient.scrapeArticleBody(a.getOriginalUrl());
             if (body == null || body.isBlank()) continue;
 
             try {
                 OpenAIDto.AnalysisResponse ar = llmAnalysisService.analyze(body);
-                a.markAnalysisCompleted();
-                articleRepository.save(a);
-                saveEmbedding(a, body);
-                saveAnalysis(a, ar, null, null);
+                String embeddingJson = embedJson(body);
+                persistenceService.persistAnalyzed(a, embeddingJson, ar, null, null);
                 log.info("✅ DLQ 재처리 성공: {}", a.getTitle());
             } catch (OpenAiAnalysisException e) {
-                a.incrementRetryCount();
-                if (a.getRetryCount() >= maxReprocessAttempts) {
-                    a.markDead();   // 한도 초과 → 영구 격리, 다음 재처리부터 조회 제외
+                boolean dead = persistenceService.persistReprocessFailure(a, maxReprocessAttempts);
+                if (dead) {
                     log.warn("DLQ 재처리 {}회 초과 → DEAD 격리: {}", maxReprocessAttempts, a.getTitle());
                 } else {
                     log.warn("DLQ 재처리 재실패({}/{}, FAILED 유지): {} ({})",
                             a.getRetryCount(), maxReprocessAttempts, a.getTitle(), e.getMessage());
                 }
-                articleRepository.save(a);   // retry_count·DEAD 영속화
             }
         }
     }
 
     private void processNaver(List<NaverNewsDto> list, Keyword keyword, String userEmail) {
-        User user = null;
-        if (userEmail != null && !userEmail.isBlank()) {
-            user = userRepository.findByEmail(userEmail).orElse(null);
-        }
-        
-        for (NaverNewsDto item : list) {
+        User user = resolveUser(userEmail);
+        // 멘토 #4: 기사별 처리를 병렬 실행. #3로 각 기사가 독립 짧은 트랜잭션이라 스레드별 커넥션으로 안전.
+        runItemsInParallel(list.stream()
+                .map(item -> (Runnable) () -> processNaverItem(item, keyword, user))
+                .toList());
+    }
 
+    private void processNaverItem(NaverNewsDto item, Keyword keyword, User user) {
+        try {
             String url = item.getOriginalUrl();
-            if (articleRepository.existsByOriginalUrl(url)) continue;   // [1] URL 매칭 ($0)
+            if (articleRepository.existsByOriginalUrl(url)) return;     // [1] URL 매칭 ($0)
 
-            // HTML 태그 제거 (예: <b></b>, <strong></strong> 등)
             String cleanTitle = removeHtmlTags(item.getTitle());
+            if (isDuplicateByTitle(cleanTitle)) return;                // [2] 제목 Jaccard ($0)
 
-            // [2] 제목 Jaccard ($0) — 스크래핑·LLM 호출 전 cheap heuristic
-            if (isDuplicateByTitle(cleanTitle)) continue;
-
-            String body = naverNewsClient.scrapeArticleBody(url);       // 스크래핑
-            if (body == null || body.isBlank()) continue;
+            String body = naverNewsClient.scrapeArticleBody(url);
+            if (body == null || body.isBlank()) return;
 
             Article a = Article.builder()
                     .title(cleanTitle)
@@ -203,43 +191,29 @@ public class NewsPipelineService {
                     .language("ko")
                     .build();
 
-            OpenAIDto.AnalysisResponse ar;
-            try {
-                ar = llmAnalysisService.analyze(body);                  // [3] LLM 분석 (재시도+폴백)
-            } catch (OpenAiAnalysisException e) {
-                // 재시도·폴백 모두 실패 → 유실하지 않고 FAILED로 저장(DLQ), 재처리 대상
-                a.markAnalysisFailed();
-                articleRepository.save(a);
-                log.warn("분석 최종 실패, DLQ 저장: {} ({})", cleanTitle, e.getMessage());
-                continue;
-            }
-
-            a.markAnalysisCompleted();
-            articleRepository.save(a);
-            saveEmbedding(a, body);
-            saveAnalysis(a, ar, keyword, user);
+            persistOrDlq(a, body, keyword, user, cleanTitle);
+        } catch (Exception e) {
+            // URL 유니크 경쟁 등 개별 기사 실패는 배치 전체를 막지 않도록 건너뛴다.
+            log.warn("기사 처리 실패(건너뜀): {} ({})", item.getOriginalUrl(), e.toString());
         }
     }
 
     private void processAITimes(List<AITimesDto> list, String userEmail) {
-        User user = null;
-        if (userEmail != null && !userEmail.isBlank()) {
-            user = userRepository.findByEmail(userEmail).orElse(null);
-        }
-        
-        for (AITimesDto item : list) {
+        User user = resolveUser(userEmail);
+        runItemsInParallel(list.stream()
+                .map(item -> (Runnable) () -> processAITimesItem(item, user))
+                .toList());
+    }
 
+    private void processAITimesItem(AITimesDto item, User user) {
+        try {
             String url = item.getOriginalUrl();
-            if (articleRepository.existsByOriginalUrl(url)) continue;   // [1] URL 매칭
-
-            // [2] 제목 Jaccard — LLM 호출 전 cheap heuristic
-            if (isDuplicateByTitle(item.getTitle())) continue;
+            if (articleRepository.existsByOriginalUrl(url)) return;     // [1] URL 매칭
+            if (isDuplicateByTitle(item.getTitle())) return;           // [2] 제목 Jaccard
 
             String body = (item.getSummary() == null ? "" : item.getSummary());
-            if (body.length() < 10)
-                body = item.getTitle() + " " + body;
-
-            if (body.isBlank()) continue;
+            if (body.length() < 10) body = item.getTitle() + " " + body;
+            if (body.isBlank()) return;
 
             LocalDateTime parsedPubDate = item.getPublishedAt();
             Article a = Article.builder()
@@ -252,42 +226,28 @@ public class NewsPipelineService {
                     .language("ko")
                     .build();
 
-            OpenAIDto.AnalysisResponse ar;
-            try {
-                ar = llmAnalysisService.analyze(body);                  // [3] LLM (재시도+폴백)
-            } catch (OpenAiAnalysisException e) {
-                a.markAnalysisFailed();
-                articleRepository.save(a);
-                log.warn("분석 최종 실패, DLQ 저장: {} ({})", item.getTitle(), e.getMessage());
-                continue;
-            }
-
-            a.markAnalysisCompleted();
-            articleRepository.save(a);
-            saveEmbedding(a, body);
-            saveAnalysis(a, ar, null, user);
+            persistOrDlq(a, body, null, user, item.getTitle());
+        } catch (Exception e) {
+            log.warn("기사 처리 실패(건너뜀): {} ({})", item.getOriginalUrl(), e.toString());
         }
     }
 
     private void processTheGuru(List<TheGuruDto> list, String userEmail) {
-        User user = null;
-        if (userEmail != null && !userEmail.isBlank()) {
-            user = userRepository.findByEmail(userEmail).orElse(null);
-        }
-        
-        for (TheGuruDto item : list) {
+        User user = resolveUser(userEmail);
+        runItemsInParallel(list.stream()
+                .map(item -> (Runnable) () -> processTheGuruItem(item, user))
+                .toList());
+    }
 
+    private void processTheGuruItem(TheGuruDto item, User user) {
+        try {
             String url = item.getOriginalUrl();
-            if (articleRepository.existsByOriginalUrl(url)) continue;   // [1] URL 매칭
-
-            // [2] 제목 Jaccard — LLM 호출 전 cheap heuristic
-            if (isDuplicateByTitle(item.getTitle())) continue;
+            if (articleRepository.existsByOriginalUrl(url)) return;     // [1] URL 매칭
+            if (isDuplicateByTitle(item.getTitle())) return;           // [2] 제목 Jaccard
 
             String body = (item.getSummary() == null ? "" : item.getSummary());
-            if (body.length() < 10)
-                body = item.getTitle() + " " + body;
-
-            if (body.isBlank()) continue;
+            if (body.length() < 10) body = item.getTitle() + " " + body;
+            if (body.isBlank()) return;
 
             LocalDateTime parsedPubDate = item.getPublishedAt();
             Article a = Article.builder()
@@ -300,21 +260,40 @@ public class NewsPipelineService {
                     .language("ko")
                     .build();
 
-            OpenAIDto.AnalysisResponse ar;
-            try {
-                ar = llmAnalysisService.analyze(body);                  // [3] LLM (재시도+폴백)
-            } catch (OpenAiAnalysisException e) {
-                a.markAnalysisFailed();
-                articleRepository.save(a);
-                log.warn("분석 최종 실패, DLQ 저장: {} ({})", item.getTitle(), e.getMessage());
-                continue;
-            }
-
-            a.markAnalysisCompleted();
-            articleRepository.save(a);
-            saveEmbedding(a, body);
-            saveAnalysis(a, ar, null, user);
+            persistOrDlq(a, body, null, user, item.getTitle());
+        } catch (Exception e) {
+            log.warn("기사 처리 실패(건너뜀): {} ({})", item.getOriginalUrl(), e.toString());
         }
+    }
+
+    private User resolveUser(String userEmail) {
+        if (userEmail == null || userEmail.isBlank()) return null;
+        return userRepository.findByEmail(userEmail).orElse(null);
+    }
+
+    /** 멘토 #4: 작업들을 pipelineItemExecutor에서 병렬 실행하고 모두 끝날 때까지 대기. */
+    private void runItemsInParallel(List<Runnable> tasks) {
+        CompletableFuture<?>[] futures = tasks.stream()
+                .map(t -> CompletableFuture.runAsync(t, pipelineItemExecutor))
+                .toArray(CompletableFuture[]::new);
+        CompletableFuture.allOf(futures).join();
+    }
+
+    /**
+     * 분석(재시도+폴백) → 성공 시 임베딩 후 저장, 최종 실패 시 FAILED 보존(DLQ).
+     * 외부 호출(분석·임베딩)은 트랜잭션 밖, DB 쓰기만 persistenceService의 짧은 트랜잭션.
+     */
+    private void persistOrDlq(Article a, String body, Keyword keyword, User user, String title) {
+        OpenAIDto.AnalysisResponse ar;
+        try {
+            ar = llmAnalysisService.analyze(body);                      // 재시도+폴백
+        } catch (OpenAiAnalysisException e) {
+            persistenceService.persistFailed(a);                        // 유실 대신 FAILED 보존(DLQ)
+            log.warn("분석 최종 실패, DLQ 저장: {} ({})", title, e.getMessage());
+            return;
+        }
+        String embeddingJson = embedJson(body);
+        persistenceService.persistAnalyzed(a, embeddingJson, ar, keyword, user);
     }
 
     // ========================================================================
@@ -387,94 +366,17 @@ public class NewsPipelineService {
         return false;
     }
 
-    private void saveEmbedding(Article article, String body) {
+    /** 본문을 임베딩해 JSON 문자열로 반환 (외부 호출이라 트랜잭션 밖). 실패 시 null → 임베딩 없이 저장. */
+    private String embedJson(String body) {
         try {
             List<Double> emb = embeddingClient.embed(body);
-            String json = objectMapper.writeValueAsString(emb);
-
-            embeddingRepository.save(
-                    ArticleEmbedding.builder()
-                            .article(article)
-                            .embeddingJson(json)
-                            .build()
-            );
-
+            return objectMapper.writeValueAsString(emb);
         } catch (Exception e) {
-            log.error("Embedding 저장 실패", e);
+            log.error("Embedding 생성 실패", e);
+            return null;
         }
     }
 
-    private void saveAnalysis(Article article, OpenAIDto.AnalysisResponse ar, Keyword keyword, User user) {
-        // 카테고리 검증: 허용된 4개 카테고리만 사용
-        String category = validateCategory(ar.getCategoryMajor());
-        
-        // 키워드 정보를 tags에 포함 (기존 tags JSON에 keyword 필드 추가)
-        String tagsJson = ar.getTagsJson();
-        if (keyword != null) {
-            try {
-                // 기존 tags JSON에 keyword 정보 추가
-                Map<String, Object> tagsMap = new HashMap<>();
-                if (tagsJson != null && !tagsJson.isEmpty()) {
-                    try {
-                        tagsMap = objectMapper.readValue(tagsJson, new TypeReference<Map<String, Object>>() {});
-                    } catch (Exception e) {
-                        // JSON 파싱 실패 시 빈 맵 사용
-                    }
-                }
-                tagsMap.put("searchKeyword", keyword.getKeyword());
-                tagsMap.put("keywordId", keyword.getId());
-                tagsJson = objectMapper.writeValueAsString(tagsMap);
-            } catch (Exception e) {
-                log.warn("키워드 정보를 tags에 추가하는데 실패했습니다.", e);
-            }
-        }
-        
-        analysisRepository.save(
-                ArticleAnalysis.builder()
-                        .article(article)
-                        .summary(ar.getSummary())
-                        .insight(ar.getInsight())
-                        .category(category)
-                        .tags(tagsJson)
-                        .user(user)
-                        .createdAt(LocalDateTime.now())
-                        .build()
-        );
-    }
-    
-    /**
-     * 카테고리를 검증하고 허용된 값으로 변환
-     * v4 taxonomy 재설계 (2026-05-22): AI Ecosystem → AI Business 변경
-     * 허용된 카테고리: Telco, LLM, INFRA, AI Business
-     */
-    private String validateCategory(String category) {
-        if (category == null || category.isBlank()) {
-            return "AI Business"; // 기본값 — 산업·정책 일반 뉴스 비중이 큼
-        }
-
-        String normalized = category.trim();
-
-        // 정확히 일치하는 경우
-        if (normalized.equals("Telco") || normalized.equals("LLM") ||
-            normalized.equals("INFRA") || normalized.equals("AI Business")) {
-            return normalized;
-        }
-
-        // 대소문자 무시하고 비교
-        String lower = normalized.toLowerCase();
-        if (lower.equals("telco")) return "Telco";
-        if (lower.equals("llm")) return "LLM";
-        if (lower.equals("infra")) return "INFRA";
-        if (lower.contains("ai business") || lower.contains("ai-business")) return "AI Business";
-
-        // 구 카테고리 호환 (GPT가 "AI Ecosystem" 반환 시 마이그레이션)
-        if (lower.contains("ai ecosystem") || lower.contains("ai-ecosystem")) return "AI Business";
-
-        // Service, 기타 등의 잘못된 카테고리는 기본값으로 변경
-        log.warn("⚠️ 잘못된 카테고리 감지: '{}', 기본값 'AI Business'로 변경", category);
-        return "AI Business";
-    }
-    
     /**
      * HTML 태그 제거 (예: <b></b>, <strong></strong>, <em></em> 등)
      */
