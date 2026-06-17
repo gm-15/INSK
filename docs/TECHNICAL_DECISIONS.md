@@ -23,7 +23,7 @@
 - **대안 검토**
   - **DB status 컬럼**: `analysis_status=ANALYSIS_FAILED` + `retry_count`. 같은 DB에 한 컬럼만 추가.
   - Kafka/메시지 큐 dead-letter 토픽: 이벤트 기반·고처리량에 강함.
-- **선택**: **DB status 컬럼** (`ANALYSIS_FAILED` → 한도 초과 시 `DEAD`).
+- **선택**: **DB status 컬럼** (`ANALYSIS_FAILED` → 한도 초과 시 `DEAD`). 재처리는 `@Scheduled`(기본 6시간)로 **자동 드레인** — 큐가 비워지지 않으면 의미가 없으므로.
 - **우리 프로젝트에 맞는 이유**: DLQ는 **패턴**이고 카프카 전용이 아니다(카프카도 native DLQ가 없어 별도 토픽으로 직접 구현). 우리는 **저처리량 배치 + 단일 MySQL** 환경이라, 레퍼런스가 권하는 "임계·저처리량 실패는 DB 테이블로 보존(ACID·관계형 조회·기존 백업/보안 재사용)"에 정확히 해당한다. `status` + `retry_count` + 한도 초과 격리는 레퍼런스의 DLQ 테이블 설계와 동일한 구성.
 - **한계**: 큐가 아니라 테이블이므로 "queue"라 부르면 오해(정확히는 dead-letter table). 영구 실패가 누적되면 정리(TTL/아카이브)가 필요. 고처리량·이벤트 기반으로 가면 메시지 큐 재검토.
 - **참고**: [SystemDR: The Dead Letter Queue Pattern](https://javatsc.substack.com/p/day-26-the-dead-letter-queue-pattern) — DB 테이블·메시지큐·하이브리드 방식과 status enum(`CREATED→PROCESSING→RETRYING→DEAD_LETTER`) 기반 추적을 다룸
@@ -62,3 +62,15 @@
 - **우리 프로젝트에 맞는 이유**: 레퍼런스가 경고하듯 commonPool은 I/O 집약 작업에서 스레드 기아를 부른다 → I/O 바운드 전용 풀로 격리. 또 파이프라인이 `@Async("taskExecutor")`에서 도는데 **같은 풀에 per-item 작업을 또 얹고 join하면 nested 풀 고갈(데드락)** → 그래서 `taskExecutor`와 분리한 `pipelineItemExecutor`(max 8)를 따로 뒀고, 풀 크기가 **동시 OpenAI 호출 상한(rate limit 방어)** 역할도 한다. 결과를 변환·체이닝할 게 없는 fan-out/fan-in이라 `thenApply` 같은 콜백은 불필요해 안 썼다. 24건·건당 200ms·pool 8 측정에서 순차 5,041ms→병렬 631ms(8.0배).
 - **한계**: 같은 배치 내 제목 dedup이 병렬에선 약해짐(서로 미커밋이라 안 보임 — best-effort heuristic이라 허용). 동시성은 풀 크기(8)가 상한. `join`은 블로킹(목적이 "논블로킹"이 아니라 "병렬 실행"이라 의도적).
 - **참고**: [DZone: Be Aware of ForkJoinPool#commonPool()](https://dzone.com/articles/be-aware-of-forkjoinpoolcommonpool) — 공용 풀은 CPU 코어 수에 따라 스레드 수가 달라지고 블로킹 작업엔 부적합 → 전용 풀 격리 근거
+
+## 6. 외부 API 타임아웃 — RestTemplate + SimpleClientHttpRequestFactory (vs WebClient / Apache HttpClient)
+
+- **상황**: OpenAI 호출에 타임아웃이 없으면(`new RestTemplate()` 기본 = 무한) 응답이 안 오는 호출이 스레드를 영원히 점유한다. 예외가 안 나니 **재시도(결정 1)조차 트리거되지 않고** 병렬 풀(결정 5)까지 막힌다 — 회복력 스택의 맨 아래 토대.
+- **대안 검토**
+  - 그대로 두기: 무한 대기 → 재시도·병렬 무력화.
+  - **RestTemplate + `SimpleClientHttpRequestFactory`에 connect/read 타임아웃**: 기존 동기 코드와 일관, 무의존성.
+  - WebClient(논블로킹) / Apache·JDK HttpClient(커넥션 풀): 더 강력하나 비동기 전환·의존성 추가.
+- **선택**: `SimpleClientHttpRequestFactory`에 **connect 5s / read 120s**를 설정한 `RestTemplate` 빈을 외부 HTTP 클라이언트(OpenAI·Embedding·Naver)에 공유 주입(값은 `external.http.*`로 외부화).
+- **우리 프로젝트에 맞는 이유**: 기존 코드가 전부 동기 `RestTemplate` 기반이라 일관성 유지 + 무의존성으로 충분. read 120s는 LLM 생성 지연을 감안한 멘토 권고값. 핵심은 **타임아웃이 실패를 "감지 가능한 사건(`SocketTimeoutException`)"으로 만들어야** 그 위의 재시도·폴백·DLQ(결정 1·2)가 비로소 작동한다는 점.
+- **한계**: `SimpleClientHttpRequestFactory`는 JDK `HttpURLConnection` 기반이라 **커넥션 풀이 없다**(요청마다 새 연결). 고트래픽이면 Apache/JDK HttpClient + 풀, 비동기가 필요하면 WebClient로 전환이 정석.
+- **참고**: Spring 공식 API — `RestTemplate` + `SimpleClientHttpRequestFactory.setConnectTimeout/setReadTimeout`(connect/read 타임아웃). 대안 클라이언트는 `WebClient`·Apache HttpClient.
