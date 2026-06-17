@@ -74,3 +74,16 @@
 - **우리 프로젝트에 맞는 이유**: 기존 코드가 전부 동기 `RestTemplate` 기반이라 일관성 유지 + 무의존성으로 충분. read 120s는 LLM 생성 지연을 감안한 멘토 권고값. 핵심은 **타임아웃이 실패를 "감지 가능한 사건(`SocketTimeoutException`)"으로 만들어야** 그 위의 재시도·폴백·DLQ(결정 1·2)가 비로소 작동한다는 점.
 - **한계**: `SimpleClientHttpRequestFactory`는 JDK `HttpURLConnection` 기반이라 **커넥션 풀이 없다**(요청마다 새 연결). 고트래픽이면 Apache/JDK HttpClient + 풀, 비동기가 필요하면 WebClient로 전환이 정석.
 - **참고**: Spring 공식 API — `RestTemplate` + `SimpleClientHttpRequestFactory.setConnectTimeout/setReadTimeout`(connect/read 타임아웃). 대안 클라이언트는 `WebClient`·Apache HttpClient.
+
+## 7. 임베딩 검색 — Qdrant VectorDB ANN (vs brute-force / Redis Stack / in-process HNSW)
+
+- **상황**: 부서 Top-5 추천이 `findAll`로 전 기사 임베딩을 메모리에 로드해 Java cosine을 도는 brute-force(O(N) + N+1 조회 + JSON 파싱)였다. 임베딩이 MySQL `LONGTEXT` JSON이라 인덱싱도 불가능했다(멘토 #1).
+- **대안 검토**
+  - brute-force 유지: 규모가 커지면 O(N)·메모리 위험.
+  - **Qdrant**(전용 VectorDB, HNSW): 메타=MySQL·벡터=Qdrant 분리. Docker 컨테이너 1개.
+  - Redis Stack 벡터검색: 기존 Redis 재활용하나 이미지 교체(RediSearch 모듈) 필요.
+  - in-process HNSW(hnswlib): 새 인프라 0이나 JVM 로컬·재시작 재빌드 → 분산(결정 3)과 상충.
+- **선택**: **Qdrant** (REST 클라이언트 — 무의존성, 기존 RestTemplate 일관. 응답 구조 라이브 검증).
+- **우리 프로젝트에 맞는 이유**: 멘토 #1이 말한 "VectorDB + HNSW + Top-K"의 정석. 메타데이터는 RDB·벡터는 VectorDB로 분리하고 HNSW로 **ANN(O(log N))** 검색. 부서 키워드 임베딩 평균을 질의 벡터로 KNN(top 30) → 인기점수 재랭킹 → top5. getTop5 미스 **3,950→1,616ms(~2.4배)** — win은 N+1 로드 + JSON 파싱 제거분([docs/benchmark/RESULTS-ann.md](benchmark/RESULTS-ann.md)).
+- **한계**: 320~600건 규모라 절대 이득 제한(구조·확장성이 핵심 — 규모 커질수록 O(N)→O(log N) 격차 확대). 관련도 의미가 "키워드별 cosine 평균"→"평균 질의벡터 cosine"으로 바뀜. Qdrant 미가동 시 빈 결과(폴백 없음). REST(`SimpleClientHttpRequestFactory`)라 커넥션 풀 없음.
+- **참고**: [Qdrant 공식 저장소](https://github.com/qdrant/qdrant) — HNSW 기반 오픈소스 VectorDB. HNSW = Approximate Nearest Neighbor 인덱스(정확검색 대비 약간의 recall 손실로 O(log N) 검색).
