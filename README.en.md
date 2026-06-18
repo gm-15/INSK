@@ -1,10 +1,29 @@
 # INSK : News Intelligence Platform
 
-> A Spring Boot 3 / Next.js 15 platform that collects articles from 3 external news sources, runs OpenAI analysis and embedding, and recommends the most relevant articles per department for 10 SK departments.
+> A Spring Boot 3 / Next.js 15 platform that collects articles from 3 external news sources, runs them through OpenAI analysis and embedding, and recommends the most relevant articles for each of SK's 10 departments.
 >
-> **Backend work that does not stop at feature delivery, but redesigns the system from the angles of operations, classification correctness, and scalability.** After v3 was deployed on AWS Elastic Beanstalk, 9 senior code review items from an SKT engineer drove a v4 cost and reliability rearchitecture (in progress).
+> **Backend work that does not stop at shipping a feature, but redesigns it from the angles of operations, data correctness, and scalability.** After deploying v3 on AWS Elastic Beanstalk, I received 9 code-review items from an SKT AI Data senior engineer, and in v4 I **implemented all 9 in code and measured the effect in numbers.**
 
-🎬 [Demo video](https://www.youtube.com/watch?v=WlKGbvbxHik) · 🇰🇷 [Korean README](README.md) · 📜 [v3 snapshot](archive/README_v3_legacy.ko.md)
+🎬 [Demo video](https://www.youtube.com/watch?v=WlKGbvbxHik), 🇰🇷 [Korean README](README.md), 🧭 [Technical decisions](docs/TECHNICAL_DECISIONS.md), 📊 [Benchmarks](docs/benchmark/), 📜 [v3 snapshot](archive/README_v3_legacy.ko.md)
+
+> 🎓 **Related side research**: [INSK-trend-forecast](https://github.com/gm-15/INSK-trend-forecast), a time-series course team project that measures Korean AI-news RAG search and recommendation quality with Precision@k and nDCG. That measurement habit carried over into INSK's recommendation validation.
+
+---
+
+## Results at a Glance (v4, all measured, artifacts committed)
+
+![INSK v4 data flow (collect, cost ladder, resilience/storage, recommendation)](docs/img/insk-v4-dataflow.png)
+
+| Work | Before → After | Improvement |
+|---|---|---|
+| **Redis distributed cache** (#9) | department recommendation 3,950ms → **21.5ms** (p95 4,384 → 40ms) | **~99.5% faster (184x)** |
+| **Per-article parallelization** (#4) | collection processing 5,041ms → **631ms** | **~87.5% faster (8.0x)** |
+| **ANN (VectorDB) recommendation** (#1) | recommendation recompute 3,950ms → **1,616ms** | **~59% faster (2.4x)** |
+| **Transaction scope split** (#3) | constrained pool, 9 concurrent 1,544ms → **509ms** | **~67% faster (3.0x)** |
+| **Classification balance recovery** | one-category skew 71% → **55%** / LLM 4% → **20%** | **-16%p / 5x recovered** |
+| **Department-recommendation silent failure** | every department scored 0 → **10/10 departments healthy** | found and fixed by measurement |
+
+> All performance numbers were measured with JMeter and reproducible benchmarks; the `.jmx` files, results, and artifacts are committed under [`docs/benchmark/`](docs/benchmark/).
 
 ---
 
@@ -12,169 +31,157 @@
 
 | Item | Detail |
 |---|---|
-| One line | Collect from 3 news sources (Naver News API · AI Times RSS · The Guru RSS), OpenAI analysis, classify into 10 department ENUM × 4 categories, deliver per-department Top-5 |
-| Period | 2025.07.01 ~ ongoing |
-| Role | Team Lead (started in SK mySUNI Sunny-C cohort 4, sole owner from v3 onward) |
-| Stack | Java 21 · Spring Boot 3.5.6 · MySQL 8 · Next.js 15 · OpenAI GPT-4o · text-embedding-3-small · AWS Elastic Beanstalk · GitHub Actions |
-| Status | v3 deployed on AWS EB; v4 cost ladder stages 1·2·4 in code (stage 3 ANN, Fallback, DLQ designed); department-recommendation silent failure fixed (merged in PR #3) |
-| Key asset | [MENTOR_FEEDBACK_CHANGELOG.md](MENTOR_FEEDBACK_CHANGELOG.md) ｜ 1:1 mapping from 9 SKT senior review items to v4 redesign |
-
-### Data Flow (v3 + v4 Cost Ladder)
-
-![INSK 4-stage cost ladder architecture](docs/img/insk-cost-ladder.png)
+| One line | Collect from 3 news sources (Naver News API, AI Times RSS, The Guru RSS), OpenAI analysis, classify into 10 department ENUM x 4 categories, per-department Top-5 recommendation |
+| Active period | 2025.07.01 ~ 2026.06 (staged evolution, see version table) |
+| Role | SK mySUNI Sunny-C cohort 4 v1/v2 team member, then sole owner of v3/v4 |
+| Stack | Java 21, Spring Boot 3.5.6, MySQL 8, Redis, Qdrant, Next.js 15, OpenAI gpt-4o-mini, text-embedding-3-small, AWS Elastic Beanstalk, GitHub Actions |
+| Status | v3 deployed on AWS EB, **v4: all 9 senior-review items implemented + 4 performance metrics measured** |
+| Key assets | [MENTOR_FEEDBACK_CHANGELOG.md](MENTOR_FEEDBACK_CHANGELOG.md) (9 senior items, 1:1 mapping to code), [TECHNICAL_DECISIONS.md](docs/TECHNICAL_DECISIONS.md) (7 decisions with alternatives and rationale) |
 
 ---
 
 ## What Problem Is This Solving
 
-IT/AI staff across SK's 10 departments manually clip, dedupe and summarise industry news every day. As of 2024 SK affiliate staff reportedly spent **about 1.5 hours per day, 7~8 hours per week** on news clipping; in 2025 some teams downgraded the activity to once a week. Manual cost was eating into strategic work.
+IT/AI staff across SK's 10 departments manually clip, dedupe, and summarize industry news every day. As of 2024, SK affiliate staff reportedly spent **about 1.5 hours per day, 7~8 hours per week** on news clipping; in 2025 some teams downgraded the activity to once a week, because the manual cost was eating into strategic work.
 
-INSK automates this collection and analysis loop and returns only articles that are genuinely relevant to each department. Because classification, summarisation and recommendation all run on LLM calls, two engineering challenges follow.
+INSK automates this collect-and-analyze loop and returns only the articles that are genuinely relevant per department. Because classification, summarization, and recommendation all run on LLMs, three engineering challenges follow.
 
-1. **Cost**: keep per-LLM-call unit cost low enough to make the system economically viable at organisation scale.
-2. **Reliability**: make sure a single LLM API failure does not drop an article completely; preserve fallback and reprocess paths.
-
-### Version Evolution
-
-| Version | Period | Stack | Status |
-|---|---|---|---|
-| v1 (Sunny-C) | 2024 | Make + Streamlit | In-house PoC |
-| v2 (Phase 2) | 2025 H1 | Python + Streamlit | Operational validation |
-| **v3** | 2025.07 ~ 2026.04 | **Spring Boot 3 + Next.js 15**, AWS EB + GitHub Actions ECR, daily 08:00 cron, OpenAI analysis + embedding + per-department Top-5 | Deployed on AWS |
-| **v4** | 2026.05 ~ ongoing | Absorbing 9 SKT senior review items on top of v3: 4-stage cost ladder (URL · Title Jaccard 0.85 · Vector ANN · GPT-4o), `@Transactional` scope split, Redis MD5 prompt caching | Stages 1·2·4 Done / Stage 3, Fallback, DLQ Designed |
-
-### Core Contributions (Gunwoo Park)
-
-> Shared lens: even when the surface response (HTTP 200) looks fine, measure one level below to find the hidden defect.
-
-1. **Department-recommendation silent failure found and fixed (found by measurement, merged in PR #3)**: department Top-5 recommendation scores were all computed as 0. The cause was a dimension mismatch between article embeddings (OpenAI 1536-d) and keyword embeddings (placeholder 256-d): the exception was swallowed by `try-catch` and returned 0.0. The response code and articles looked normal, so it was invisible on the surface; it was found by logging and measuring the recommendation scores directly. Fixed by embedding keywords with the real OpenAI model, surfacing the dimension mismatch via an explicit exception and log (regression guard), and adding the 4 missing department mappings. Verified on live data that all 10 departments now recommend domain-appropriate articles.
-2. **Classification correctness recovery**: gpt-4o-mini was tagging LLM articles as AI Business, causing a 71% skew to one category. Redesigned the 4-category definitions (LLM · INFRA · Telco · AI Business) and their boundaries, rebuilt the SYSTEM_PROMPT, and ran a DB migration to restore balance. (A separate measurement case from the department recommendation.)
-3. **v4 4-stage cost ladder design**: turned 9 SKT senior review items into PR-shaped work, splitting the pipeline into URL → Title Jaccard 0.85 → Vector ANN → GPT-4o so that the expensive LLM call only sees genuinely new articles.
-4. **Joint redesign of LLM cost and reliability**: externalised models (analysis / simple / embedding — externalised so per-task models can be assigned; currently analysis also runs on gpt-4o-mini for cost), fallback (gpt-4o-mini → gpt-4o), and a DLQ state machine (ANALYSIS_FAILED + separate reprocess).
+1. **Cost**: keep the per-LLM-call unit cost low enough to be economical at organization scale.
+2. **Reliability**: make sure a single LLM API failure never drops an article; preserve retry, fallback, and reprocess paths.
+3. **Scalability**: design distributed cache, VectorDB, and transaction boundaries so behavior stays consistent as instances scale out.
 
 ---
 
-## Key Measurements
+## Version Evolution: roughly one year of staged growth
 
-### v3 Operational Measurement (gpt-4o-mini, measured 2026-05)
+This was not built in one shot; it **evolved in stages over roughly a year.** It started as a PoC in the SK Sunny-C cohort 4 in summer 2025, the product code (v3) was completed and deployed at year-end, and the following spring and summer it was rearchitected into v4 after senior review. The seemingly long total span is not one task dragging on but staged growth (**PoC → productized deployment → rearchitecture**); v4's core improvements were concentrated in **June 2026.**
 
-| Metric | Value | Source |
-|---|:---:|---|
-| Cumulative articles | ~320 | DB inspection (2026-05-24) |
-| OpenAI cumulative cost | $0.19 | OpenAI usage, 4 trigger runs |
-| **Per-article unit cost (gpt-4o-mini)** | **~$0.0005** | usage page / new article count |
-| Daily collection (avg) | 30~80 | average of 4 trigger runs |
+| Version | Period | Stack | Result |
+|---|---|---|---|
+| v1/v2 (Sunny-C) | **2025.07.01 ~ 08.21** | Make → Python + Streamlit | In-house PoC, operational validation |
+| **v3** | **2025.09.09 ~ 12.26** | **Spring Boot 3 + Next.js 15**, AWS EB + GitHub Actions ECR, daily 08:00 cron | Deployed on AWS |
+| **v4** | **2026.05.19 ~ 06.18** | Absorbed 9 senior-review items: retry/fallback/DLQ, transaction split, parallelization, Redis cache, VectorDB (Qdrant) ANN, security | **All 9 implemented + measured** |
 
-### v4 Classification Recovery (taxonomy redesign, 2026-05-22)
+---
 
-| Category | Before migration | After migration | Change |
-|---|:---:|:---:|:---:|
-| AI Business (formerly AI Ecosystem) | 71% | **55%** | **-16%p relaxed** |
-| LLM | 4% | **20%** | **5x recovered** |
+## Core Contributions (Gunwoo Park)
 
-> Ran a SQL query on classification distribution, found the 71% skew, redesigned category definitions and boundary rules, rebuilt the SYSTEM_PROMPT, and reclassified 36 articles via SQL migration. HTTP codes and JSON schemas were all "fine"; the failure was semantic.
+> Shared lens: even when the surface response (HTTP 200) looks fine, measure one level below to find the hidden defect.
 
-### Cost Ladder Expected Effect (v4 blueprint, not yet measured)
+1. **Silent failure found and fixed by measurement (signature)**: department Top-5 recommendation scores were silently dead at **0 for every department**, behind a healthy 200 response and normal article payloads. I found it by logging and measuring the recommendation scores directly. The cause was a dimension mismatch between article embeddings (OpenAI 1536-d) and keyword embeddings (placeholder 256-d) whose exception was swallowed as 0.0 by a `try-catch`. I switched to real embeddings, surfaced the dimension mismatch via an explicit exception and log (regression guard), and added the 4 missing department mappings, recovering **domain-appropriate recommendations for all 10 departments** (qualitative validation).
+2. **Classification balance recovery**: gpt-4o-mini was tagging LLM articles as AI Business, producing a 71% skew to one category, which I found by measuring with SQL. I redesigned the 4-category definitions and boundaries, rebuilt the SYSTEM_PROMPT, and ran a DB migration, recovering **AI Business 71% → 55% (-16%p) and LLM 4% → 20% (5x).**
+3. **All 9 senior-review items implemented + measured**: I fixed transaction scope, synchronous processing, the missing cache, and brute-force search in turn, all verified by benchmark (see "Results at a Glance"). The alternatives and rationale for each choice are recorded as 7 entries in [TECHNICAL_DECISIONS.md](docs/TECHNICAL_DECISIONS.md).
+4. **Joint LLM cost and reliability design**: model externalization (analysis / simple / embedding, externalized so each task can pin its own model; currently analysis also runs on gpt-4o-mini for cost), exponential-backoff retry plus fallback, and a DLQ state machine (`ANALYSIS_FAILED` then `DEAD` after the limit) so transient errors lose **zero** articles.
 
-| Stage | Cost | Filter rate (predicted) |
-|:---:|:---:|:---:|
-| 1. URL exact match | $0 | ~40% |
-| 2. Title Jaccard ≥ 0.85 | $0 | ~8% |
-| 3. Vector ANN | ~$0 | ~18% |
-| 4. GPT-4o (or gpt-4o-mini) | $0.05 / $0.0005 | only articles that pass 1~3 |
+---
 
-> Filter rates are predicted figures from [MENTOR_FEEDBACK_CHANGELOG.md](MENTOR_FEEDBACK_CHANGELOG.md). Real measurements will be added after stage 3 ANN implementation and load testing.
+## 9 Senior-Review Items → v4 Status
+
+| # | Item (summary) | Reflected |
+|:-:|---|---|
+| 1 | dedup `findAll` OOM and cost; embedding JSON storage cannot be indexed → VectorDB/HNSW | ✅ Title Jaccard dedup ($0 filter before the LLM) + **recommendation moved to Qdrant ANN (KNN)** |
+| 2 | gpt-4o overused for simple work | ✅ Model externalization (analysis/simple/embedding/fallback) |
+| 3 | `runPipelineSync` fully `@Transactional` → connection-pool exhaustion | ✅ External calls outside the transaction, only the save in a short transaction (`ArticlePersistenceService`) |
+| 4 | Sequential processing → parallelize | ✅ Per-article `CompletableFuture` + dedicated pool |
+| 5 | No retry, transient errors lose articles | ✅ `@Retryable` (exp backoff + jitter), `@Recover` fallback, DLQ, auto reprocess |
+| 6 | Score API `permitAll` | ✅ Dead rule removed + auth regression test |
+| 7 | Hardcoded CORS | ✅ `cors.allowed-origins` externalized |
+| 8 | Hardcoded config values | ✅ Thresholds, retry, cache TTL, etc. externalized |
+| 9 | In-memory cache is per-server and partial → Redis | ✅ Redis distributed cache (JDK serialization) |
+
+> Beyond the review, I also added **external-API timeouts** and **DLQ auto-drain (@Scheduled)** from my own audit. Full matrix in [MENTOR_FEEDBACK_CHANGELOG.md](MENTOR_FEEDBACK_CHANGELOG.md).
+
+---
+
+## Measurements (actual)
+
+### v4 four performance metrics (JMeter, reproducible bench, [`docs/benchmark/`](docs/benchmark/))
+
+| Work | miss/processing Before | After | Improvement | Key |
+|---|---:|---:|---:|---|
+| Redis cache (#9) | 3,950 ms | 21.5 ms | 99.5%↓ (184x) | repeated compute removed, p95 4,384→40ms |
+| Parallelization (#4) | 5,041 ms | 631 ms | 87.5%↓ (8.0x) | overlapped I/O waits, dedicated pool (max 8) |
+| ANN recommendation (#1) | 3,950 ms | 1,616 ms | 59%↓ (2.4x) | N+1 loads, JSON parsing removed |
+| Transaction split (#3) | 1,544 ms | 509 ms | 67%↓ (3.0x) | connection not held during external I/O (pool=3, 9 concurrent) |
+
+### v3 operational measurement (gpt-4o-mini, measured 2026-05)
+
+| Metric | Value |
+|---|:---:|
+| Cumulative articles | ~320 |
+| **Per-article unit cost** | **~$0.0005** (gpt-4o-mini) |
+| Model cost | running analysis on gpt-4o-mini cuts ~90%+ per call vs gpt-4o |
+
+### Classification balance / department recommendation
+
+| Item | Before | After |
+|---|---|---|
+| Classification skew (AI Business) | 71% | **55%** (-16%p) |
+| LLM category | 4% | **20%** (5x) |
+| Department recommendation score | every department 0 | **10/10 departments healthy** |
+
+> **Honest labeling**: the cost-ladder "filter rates" (URL 40%, Jaccard 8%) are [predicted figures](MENTOR_FEEDBACK_CHANGELOG.md). Department recommendation has no ground-truth set, so it is **qualitatively validated**; I do not claim quantitative scores like Precision@k. The old "Redis 195→70ms" figure has no artifact, so it is retired, and only the v4 measurements above are cited.
 
 ---
 
 ## Architecture
 
-### v3 Data Flow (deployed)
+### Data flow (full v4 pipeline)
+
+![INSK v4 news analysis pipeline data flow (collect → cost ladder → resilience/storage → recommendation)](docs/img/insk-v4-dataflow.png)
+
+### v3 data flow (deployed)
 
 ```
-3 news sources
-  Naver News API  (REST + Jsoup body scrape)
-  AI Times        (RSS XML parse)
-  The Guru        (RSS XML parse)
+3 news sources (Naver REST+Jsoup, AI Times RSS, The Guru RSS)
         │
         ▼
 Spring Boot 3.5.6 (Java 21)
-  NewsPipelineService (@Async)
-    collect → OpenAI analysis → embed → score
-  Spring Security + JWT (1h TTL)
-  Per-department Top-5 recommendation
+  NewsPipelineService: collect → analyze → embed → score (per-article parallel)
+  Spring Security + JWT (1h TTL), per-department Top-5 recommendation
+        │
+        ├─ MySQL 8.0  (metadata: users, articles, analyses, scores ...)
+        ├─ Redis      (distributed cache: department Top-5)
+        └─ Qdrant     (VectorDB: article embedding HNSW index)
         │
         ▼
-MySQL 8.0
-  users · keywords · articles · article_analyses
-  article_embeddings · article_feedbacks · article_scores
-        │
-        ▼
-Next.js 15.5.4 (App Router) + Tailwind CSS 4
-  / · /articles/[id] · /keywords · /departments · /favorites
-
+Next.js 15.5.4 (App Router) + Tailwind 4
 Deploy: GitHub Actions → AWS ECR → Elastic Beanstalk
-       (multi-stage Dockerfile · EB Ready-state polling guard)
 ```
 
-### v4 Cost Ladder
+### v4 cost ladder + resilience
 
 ```
 new article in
-    │
-    ▼ Layer 1 ｜ URL exact match           ($0)               ✅ Done
-    │  O(1) DB index lookup
-    ▼ Layer 2 ｜ Title Jaccard ≥ 0.85      ($0)               ✅ Done
-    │  2-day window + token set comparison
-    ▼ Layer 3 ｜ Vector ANN                 (~$0)              🟡 Designed
-    │  embed once, pre-indexed
-    ▼ Layer 4 ｜ GPT-4o (or mini)           ($0.05 / $0.0005)  ✅ Done
-       only articles that pass 1~3
+    ▼ Layer 1 | URL match              ($0)              ✅
+    ▼ Layer 2 | Title Jaccard          ($0)              ✅
+    ▼ Layer 3 | gpt-4o-mini analysis   ($0.0005/article) ✅  ← only new articles passing layers 1~2
+       │
+       ├─ retry (5x exp backoff + jitter) → fallback (higher model) → on failure DLQ (ANALYSIS_FAILED→DEAD)  ✅
+       └─ index analysis embedding into Qdrant (outside tx) → department recommendation via Qdrant KNN  ✅
 
-Failure handling (both 🟡 Designed)
-    LLM failure → gpt-4o-mini Fallback
-    Fallback failure → ANALYSIS_FAILED state + separate reprocess
+Department recommendation: average keyword embeddings → Qdrant ANN (top30) → popularity re-rank → Top5  (Redis cache)
 ```
 
----
+> Note: mentor #1's "VectorDB/HNSW" was applied to **department-recommendation search** (brute-force → ANN, 2.4x). A semantic-dedup ANN was not adopted, due to threshold false-positive risk and the absence of a ground-truth set; the same Qdrant infra is in place, so it remains a candidate for later if needed.
 
-## Implemented
+**Cost-ladder filter rates (predicted, not measured)**
 
-- **v3 in production**: AWS Elastic Beanstalk deploy, GitHub Actions ECR pipeline, 3-source collection, GPT-4o analysis + embedding, per-department Top-5 recommendation, JWT auth, likes/feedback, PDF export
-- **v4 partial**: cost ladder stages 1·2·4 (URL match + Title Jaccard + LLM call), OpenAI model externalisation (analysis / simple / embedding), taxonomy redesign (AI Ecosystem → AI Business + strengthened LLM definition), thresholds and dedup window externalised to application.properties
-- **Department-recommendation silent failure fix (merged in PR #3)**: placeholder 256-d keyword embeddings → real OpenAI 1536-d embeddings, dimension mismatch surfaced via exception + log (regression guard), 4 missing department mappings added, popularity-score baseline removed so relevance leads. Includes reproduction/regression tests and live verification.
+| Stage | Cost | Filter rate (predicted) |
+|:---:|:---:|:---:|
+| 1. URL exact match | $0 | ~40% |
+| 2. Title Jaccard | $0 | ~8% |
+| 3. gpt-4o-mini analysis | $0.0005/article | only articles passing layers 1~2 |
 
----
-
-## Designed / In Progress
-
-- **v4 cost ladder stage 3**: Vector ANN (FAISS or HNSW index under evaluation)
-- **Retry + fallback**: `@Retryable(maxAttempts=5, backoff=@Backoff(delay=1000, multiplier=2.0))` + `@Recover` smaller-model fallback
-- **DLQ mechanism**: ANALYSIS_FAILED state + separate reprocess job
-- **Transaction scope split**: extract ArticleSaveService so external API calls live outside the DB connection
-- **Redis CacheManager**: article body MD5 key prompt caching, distributed cache consistency
-- **Keyword parallelisation**: introduce `CompletableFuture.runAsync`
+> Filter rates are predicted figures from [MENTOR_FEEDBACK_CHANGELOG.md](MENTOR_FEEDBACK_CHANGELOG.md), and will be updated with real load-test measurements.
 
 ---
 
-## Roadmap
+## Implemented / Future Track
 
-### v4 implementation
-- [x] Cost ladder stages 1·2 (URL + Title Jaccard)
-- [x] OpenAI model externalisation (analysis / simple / embedding)
-- [x] Taxonomy redesign (AI Business + strengthened LLM definition)
-- [x] Department-recommendation silent failure fix + popularity-score baseline redesign (PR #3)
-- [x] Threshold + dedup window externalisation
-- [ ] Cost ladder stage 3 (Vector ANN)
-- [ ] `@Retryable` + `@Recover` fallback
-- [ ] DLQ mechanism (ANALYSIS_FAILED + separate reprocess)
-- [ ] Transaction scope split
-- [ ] Redis CacheManager (distributed cache)
-- [ ] Keyword parallelisation (`CompletableFuture.runAsync`)
+**Implemented (all on main):** all 9 senior items, external-API timeout, DLQ auto-drain, silent-failure fix, classification-balance recovery. Includes measurements, artifacts, and regression tests.
 
-### v4 validation
-- [ ] Real-operation cost ladder measurement (currently predicted only)
-- [ ] retry / fallback chaos test
+**Future (for multi-instance deployment):** ShedLock (scheduler dedup), PENDING-first persistence (crash-safety), PDF S3 migration, Qdrant fallback/circuit breaker, scraping UA rotation, cost-ladder semantic-dedup ANN.
 
 ---
 
@@ -182,11 +189,10 @@ Failure handling (both 🟡 Designed)
 
 | Area | Stack |
 |---|---|
-| Backend (v3) | Spring Boot 3.5.6 · Java 21 · Gradle · Spring Data JPA · Hibernate · MySQL 8.0 · Spring Security · jjwt 0.12.x · BCrypt · Jsoup 1.17.2 · Spring WebFlux · PDFBox 2.0.30 · iText 7.2.5 · `@Async` ThreadPoolTaskExecutor |
-| Backend (v4 planned) | Spring Retry · Resilience4j · RedisCacheManager |
-| Frontend | Next.js 15.5.4 (App Router) · React 19.1 · TypeScript 5 · Tailwind CSS 4 · Axios |
-| AI / Data | OpenAI gpt-4o-mini (article analysis, default; switchable via externalised config) · gpt-4o (fallback) · text-embedding-3-small (semantic embedding) |
-| Infrastructure | AWS Elastic Beanstalk (ap-northeast-2) · AWS ECR (multi-stage Docker) · GitHub Actions (test → build → ECR push → S3 → EB deploy with Ready-state polling) |
+| Backend | Spring Boot 3.5.6, Java 21, Gradle, Spring Data JPA, Hibernate, MySQL 8.0, **Spring Retry**, **Redis (RedisCacheManager)**, Spring Security, jjwt 0.12.x, Jsoup 1.17.2, PDFBox, iText |
+| Vector / AI | **Qdrant (VectorDB, HNSW)**, OpenAI gpt-4o-mini (analysis and default, switchable via externalized config), gpt-4o (fallback), text-embedding-3-small (embedding) |
+| Frontend | Next.js 15.5.4 (App Router), React 19.1, TypeScript 5, Tailwind CSS 4, Axios |
+| Infrastructure | AWS Elastic Beanstalk (ap-northeast-2), AWS ECR (multi-stage Docker), GitHub Actions (test → build → ECR push → S3 → EB deploy) |
 
 ---
 
@@ -194,35 +200,35 @@ Failure handling (both 🟡 Designed)
 
 | Area | What I did |
 |---|---|
-| System design | Integration of 3 news sources + 3 OpenAI APIs, normalisation around 10 department ENUM × 4 categories |
-| Backend impl | Spring Boot pipeline (collect → analyse → embed → score), JWT auth, per-department Top-5 algorithm |
-| AI integration | GPT-4o classification + text-embedding-3-small + cosine similarity scoring + 5-layer GPT output validation |
-| Deploy / Ops | AWS EB + GitHub Actions ECR pipeline, daily collection cron operation |
-| Review absorption | Organised 9 SKT senior review items into a matrix, wrote the v4 refactor plan, landed parts of it in code |
+| System design | Integrated 3 news sources + 3 OpenAI-family APIs, normalized 10 department ENUM x 4 categories |
+| Backend impl | collect→analyze→embed→score pipeline, JWT auth, per-department Top-5, retry/fallback/DLQ, transaction split, parallelization |
+| AI / Vector | classification, embedding, cosine scoring, Qdrant VectorDB ANN search, GPT output validation |
+| Deploy / Ops | AWS EB + GitHub Actions ECR, daily collection cron |
+| Review absorption | landed 9 senior items as code PRs, measured the effect, recorded the decisions |
 
-> Team lead: started in SK mySUNI Sunny-C cohort 4 for v1/v2. From v3 onward I have been driving the work solo.
+> SK mySUNI Sunny-C cohort 4 v1/v2 team member; sole owner from v3 onward.
 
 ---
 
 ## How to Run Locally
 
 ### Prerequisites
-- Java 21
-- MySQL 8.0 (database: `insk_db`)
-- OpenAI API Key
-- Naver Developers Client ID / Secret
+- Java 21, MySQL 8.0 (`insk_db`), OpenAI API Key, Naver Developers ID/Secret
+- (optional) Redis, Qdrant for cache and VectorDB. Start with Docker:
+  ```bash
+  docker run -d --name insk-redis  -p 6379:6379 redis:7-alpine
+  docker run -d --name insk-qdrant -p 6333:6333 qdrant/qdrant
+  ```
 
 ### 1. Backend
-
 ```bash
 cd insk-backend/backend
 # write application.properties (see BACKEND_SETUP_GUIDE.md)
-./gradlew bootRun
-# Windows: .\gradlew.bat bootRun
+./gradlew bootRun     # Windows: .\gradlew.bat bootRun
 ```
+> On startup, `VectorIndexInitializer` backfills MySQL embeddings into Qdrant.
 
 ### 2. Frontend
-
 ```bash
 cd insk-frontend
 npm install
@@ -231,34 +237,28 @@ npm run dev
 ```
 
 ### 3. Trigger the pipeline (PowerShell)
-
 ```powershell
-# login, get token
 $body = @{ email = "your-email"; password = "your-password" } | ConvertTo-Json
 $token = (Invoke-RestMethod "http://localhost:8080/api/v1/auth/login" -Method POST -ContentType "application/json" -Body $body).accessToken
-
-# trigger collection + analysis (async, 2~5 min)
-Invoke-RestMethod "http://localhost:8080/api/v1/articles/run-pipeline" `
-  -Method POST -Headers @{ Authorization = "Bearer $token" }
+Invoke-RestMethod "http://localhost:8080/api/v1/articles/run-pipeline" -Method POST -Headers @{ Authorization = "Bearer $token" }
 ```
-
-Scheduled run: `@Scheduled(cron = "0 0 8 * * *")`, daily 08:00 KST.
+Scheduled run: `@Scheduled(cron = "0 0 8 * * *")`, daily 08:00 KST. DLQ reprocess every 6 hours.
 
 ---
 
 ## In-Repo References
 
-- [MENTOR_FEEDBACK_CHANGELOG.md](MENTOR_FEEDBACK_CHANGELOG.md) ｜ 9 SKT senior review items → v4 redesign, 1:1 mapping
-- [PROJECT_SPECIFICATION.md](PROJECT_SPECIFICATION.md) ｜ Functional spec
-- [insk-backend/BACKEND_SETUP_GUIDE.md](insk-backend/BACKEND_SETUP_GUIDE.md) ｜ Local environment setup
-- [README.md](README.md) ｜ Korean master
-- [archive/README_v3_legacy.ko.md](archive/README_v3_legacy.ko.md) ｜ v3 snapshot
+- [MENTOR_FEEDBACK_CHANGELOG.md](MENTOR_FEEDBACK_CHANGELOG.md) | 9 senior items → 1:1 code mapping
+- [docs/TECHNICAL_DECISIONS.md](docs/TECHNICAL_DECISIONS.md) | 7 technical decisions (alternatives, rationale)
+- [docs/benchmark/](docs/benchmark/) | JMeter `.jmx`, results, measurement reports
+- [insk-backend/BACKEND_SETUP_GUIDE.md](insk-backend/BACKEND_SETUP_GUIDE.md) | Local setup
+- [README.md](README.md) | Korean master, [archive/README_v3_legacy.ko.md](archive/README_v3_legacy.ko.md) | v3 snapshot
 
 ---
 
 ## Contact
 
-**Gunwoo Park ｜ Backend Engineer (Sangmyung University, Software, 4th year, graduating 2027.02)**
+**Gunwoo Park | Backend Engineer (Sangmyung University, Software, 4th year, graduating 2027.02)**
 
 - Email: gunwoo363@gmail.com
 - GitHub: [github.com/gm-15](https://github.com/gm-15)
